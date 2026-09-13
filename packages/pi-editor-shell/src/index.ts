@@ -540,7 +540,7 @@ export default function (pi: ExtensionAPI) {
       const hitRate = cacheHitRate(_latestUsage);
       const cachePart =
         _cacheTotal > 0
-          ? `${theme.fg("dim", " · ")}${theme.fg("warning", `${icons.cache} ${formatTokens(cacheReadNow)} (${formatTokens(_cacheTotal)})${hitRate != null ? ` ${icons.hitRate} ${hitRate.toFixed(1)}%` : ""}`)}`
+          ? `${theme.fg("dim", " · ")}${theme.fg("warning", `${icons.cache} ${formatTokens(cacheReadNow)}(${formatTokens(_cacheTotal)})${hitRate != null ? ` ${icons.hitRate} ${hitRate.toFixed(1)}%` : ""}`)}`
           : "";
       const displayedTps = config.tpsDisplay === "end-to-end"
         ? _latestPerformance?.e2eTps
