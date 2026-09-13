@@ -14,6 +14,19 @@ export interface PatchDetails {
   readonly files: readonly FileDetails[];
 }
 
+/**
+ * What the one-line tool call header shows. Counts stay undefined until the
+ * result supplies comparable diffs; a file whose previous content could not be
+ * read has no diff, so the aggregate would be wrong and is omitted.
+ *
+ * @internal
+ */
+export interface PatchSummary {
+  readonly fileCount: number;
+  readonly added?: number;
+  readonly removed?: number;
+}
+
 /** @internal */
 export function makeDetails(files: readonly FileChange[]): PatchDetails {
   return {
@@ -38,6 +51,35 @@ function safe(text: string): string {
   return stripTerminalSequences(text).replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "");
 }
 
+/** Count `*** Add|Delete|Update File:` operations in raw patch text. @internal */
+export function countPatchFiles(input: string): number {
+  return [...input.matchAll(/^\s*\*\*\* (?:Add|Delete|Update) File: /gm)].length;
+}
+
+/** Aggregate per-file line counts into the header summary. @internal */
+export function summarize(files: readonly FileDetails[]): PatchSummary {
+  if (!files.every((file) => file.diff !== undefined)) return { fileCount: files.length };
+  return {
+    fileCount: files.length,
+    added: files.reduce((total, file) => total + (file.added ?? 0), 0),
+    removed: files.reduce((total, file) => total + (file.removed ?? 0), 0),
+  };
+}
+
+/**
+ * The single-line tool call header: tool name, file count, aggregate diff.
+ *
+ * @internal
+ */
+export function renderPatchHeader(theme: Theme, summary: PatchSummary): string {
+  const counted = ` ${summary.fileCount} file${summary.fileCount === 1 ? "" : "s"}`;
+  const stats =
+    summary.added === undefined
+      ? ""
+      : ` ${theme.fg("toolDiffAdded", `+${summary.added}`)} ${theme.fg("toolDiffRemoved", `-${summary.removed ?? 0}`)}`;
+  return theme.fg("toolTitle", theme.bold("apply_patch")) + theme.fg("dim", counted) + stats;
+}
+
 /** @internal */
 export function renderPatchResult(
   details: PatchDetails | undefined,
@@ -51,12 +93,9 @@ export function renderPatchResult(
     return new Text(theme.fg(isError ? "error" : "muted", safe(output)), 0, 0);
   }
   const files: readonly FileDetails[] = details.files;
-  const added = files.reduce((total, file) => total + (file.added ?? 0), 0);
-  const removed = files.reduce((total, file) => total + (file.removed ?? 0), 0);
-  const counts = files.every((file) => file.diff !== undefined)
-    ? ` ${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)}`
-    : "";
-  const rows = [theme.fg("muted", `${files.length} file${files.length === 1 ? "" : "s"}`) + counts];
+  // The file count and aggregate diff live in the tool call header, so the body
+  // carries only the per-file rows (and their diffs when expanded).
+  const rows: string[] = [];
   for (const file of expanded ? files : files.slice(0, 8)) {
     const marker = { add: "A", update: "M", delete: "D" }[file.kind];
     const path = safe(file.moveTo ? `${file.path} → ${file.moveTo}` : file.path).replaceAll(

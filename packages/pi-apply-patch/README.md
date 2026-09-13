@@ -82,7 +82,7 @@ M src/main.ts
 D obsolete.txt
 ```
 
-Errors are thrown through pi's tool failure contract. TUI results show file summaries and expandable diffs, with previews capped at 120 diff lines per file. Complete diff details remain in the session. RPC, print, and JSON modes receive the same plain text tool results without relying on TUI components.
+Errors are thrown through pi's tool failure contract. In the TUI the tool row header carries the file count and the aggregate `+N/-M` (omitted when a file's previous content could not be read, so no diff exists for it); the result body lists the affected files and, when expanded, their diffs capped at 120 lines per file. Complete diff details remain in the session. RPC, print, and JSON modes receive the same plain text tool results without relying on TUI components.
 
 ## Compatibility baseline
 

@@ -3,7 +3,15 @@ import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { applyPatch, formatSummary, nodeFileSystem, type ApplyContext } from "./apply.ts";
 import { CODEX_APPLY_PATCH_GRAMMAR } from "./grammar.ts";
-import { makeDetails, renderPatchResult, type PatchDetails } from "./render.ts";
+import {
+  countPatchFiles,
+  makeDetails,
+  renderPatchHeader,
+  renderPatchResult,
+  summarize,
+  type PatchDetails,
+  type PatchSummary,
+} from "./render.ts";
 
 const schema = Type.Object({
   input: Type.String({
@@ -33,17 +41,17 @@ export function makeApplyPatchTool(
         details: makeDetails(result.files),
       };
     },
-    renderCall(args, theme) {
-      const count =
-        typeof args.input === "string"
-          ? [...args.input.matchAll(/^\s*\*\*\* (?:Add|Delete|Update) File: /gm)].length
-          : 0;
-      return new Text(
-        theme.fg("toolTitle", theme.bold("apply_patch")) +
-          (count ? theme.fg("dim", ` ${count} file${count === 1 ? "" : "s"}`) : ""),
-        0,
-        0,
-      );
+    renderCall(args, theme, context) {
+      const text = (context.lastComponent as Text | undefined) ?? new Text("", 0, 0);
+      // renderCall runs before renderResult on every pass, so the executed
+      // counts are re-read from the row-local state. Parsing the input is the
+      // only source available while the patch is still streaming in.
+      const summary: PatchSummary = context.state.patchSummary ?? {
+        fileCount: typeof args.input === "string" ? countPatchFiles(args.input) : 0,
+      };
+      context.state.callText = text;
+      text.setText(renderPatchHeader(theme, summary));
+      return text;
     },
     renderResult(result, { expanded, isPartial }, theme, context) {
       if (isPartial) return new Text(theme.fg("muted", "Applying patch…"), 0, 0);
@@ -51,6 +59,22 @@ export function makeApplyPatchTool(
         .filter((block) => block.type === "text")
         .map((block) => block.text)
         .join("\n");
+      const files =
+        !context.isError && Array.isArray(result.details?.files) ? result.details.files : undefined;
+      if (files) {
+        const summary = summarize(files);
+        const previous = context.state.patchSummary as PatchSummary | undefined;
+        context.state.patchSummary = summary;
+        // Refresh the header in place: lastComponent here is the result, not the
+        // header. Never call context.invalidate() from a renderer — it re-enters
+        // updateDisplay synchronously and the row renders twice.
+        if (
+          previous?.fileCount !== summary.fileCount ||
+          previous?.added !== summary.added ||
+          previous?.removed !== summary.removed
+        )
+          (context.state.callText as Text | undefined)?.setText(renderPatchHeader(theme, summary));
+      }
       return renderPatchResult(result.details, text, expanded, context.isError, theme);
     },
   };

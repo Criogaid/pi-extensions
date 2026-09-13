@@ -2,7 +2,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { makeApplyPatchTool } from "../src/tool.ts";
-import { makeDetails, renderPatchResult } from "../src/render.ts";
+import type { Text } from "@earendil-works/pi-tui";
+import {
+  countPatchFiles,
+  makeDetails,
+  renderPatchHeader,
+  renderPatchResult,
+  summarize,
+} from "../src/render.ts";
 import { MemoryFileSystem, ROOT } from "./memory-fs.ts";
 
 const theme = { fg: (_color: string, text: string) => text, bold: (text: string) => text } as Theme;
@@ -56,6 +63,61 @@ test("rendering sanitizes terminal escapes and keeps errors expandable", () => {
   assert.match(
     renderPatchResult(undefined, "failed\nreason", true, true, theme).render(120).join("\n"),
     /reason/,
+  );
+});
+
+test("header carries the file count and aggregate diff; the body repeats neither", () => {
+  const tool = makeApplyPatchTool();
+  let invalidated = false;
+  const context = {
+    state: {},
+    lastComponent: undefined,
+    isError: false,
+    invalidate: () => {
+      invalidated = true;
+    },
+  };
+  const args = {
+    input:
+      "*** Begin Patch\n*** Add File: a\n+x\n*** Update File: b\n*** Move to: c\n@@\n-y\n+z\n*** End Patch",
+  };
+  const header = tool.renderCall!(args, theme, context as never) as Text;
+  assert.equal(header.render(120).join("\n").trimEnd(), "apply_patch 2 files");
+
+  const details = makeDetails([
+    { kind: "add", path: "a", before: "", after: "x\n" },
+    { kind: "update", path: "b", moveTo: "c", before: "y\n", after: "z\n" },
+  ]);
+  const body = tool.renderResult!(
+    { content: [{ type: "text", text: "Success." }], details },
+    { expanded: false, isPartial: false },
+    theme,
+    context as never,
+  ) as Text;
+
+  // The header is refreshed in place from the executed counts; the body shows
+  // only the per-file rows, so neither the file count nor the aggregate repeat.
+  assert.equal(header.render(120).join("\n").trimEnd(), "apply_patch 2 files +2 -1");
+  const bodyText = body.render(120).join("\n");
+  assert.doesNotMatch(bodyText, /2 files/);
+  assert.doesNotMatch(bodyText, /\+2/);
+  assert.match(bodyText, /A a/);
+  assert.match(bodyText, /M b → c/);
+  assert.equal(invalidated, false);
+});
+
+test("header counts update-file-with-move once and omits diff counts when unavailable", () => {
+  assert.equal(
+    countPatchFiles("*** Begin Patch\n*** Update File: a\n*** Move to: b\n@@\n*** End Patch"),
+    1,
+  );
+  const details = makeDetails([{ kind: "add", path: "a", before: undefined, after: "x" }]);
+  const summary = summarize(details.files);
+  assert.deepEqual(summary, { fileCount: 1 });
+  assert.equal(renderPatchHeader(theme, summary), "apply_patch 1 file");
+  assert.equal(
+    renderPatchHeader(theme, { fileCount: 3, added: 10, removed: 2 }),
+    "apply_patch 3 files +10 -2",
   );
 });
 
