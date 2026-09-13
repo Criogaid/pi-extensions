@@ -1,8 +1,14 @@
-# pi-apply-patch
+# @d3ara1n/pi-apply-patch
+
+[![npm version](https://img.shields.io/npm/v/@d3ara1n/pi-apply-patch)](https://www.npmjs.com/package/@d3ara1n/pi-apply-patch) [![npm downloads](https://img.shields.io/npm/dm/@d3ara1n/pi-apply-patch)](https://www.npmjs.com/package/@d3ara1n/pi-apply-patch) [![license](https://img.shields.io/npm/l/@d3ara1n/pi-apply-patch)](https://www.npmjs.com/package/@d3ara1n/pi-apply-patch)
 
 Codex-compatible `apply_patch` editing for pi, limited to the current workspace.
 
 GPT models accustomed to Codex can use the familiar freeform patch format. The extension registers the official Lark grammar through pi's constrained sampling API and implements patch parsing, context matching, and file operations in TypeScript. It has no configuration or additional runtime library dependencies.
+
+## Dependencies
+
+None. The extension uses the pi framework packages supplied by the host.
 
 ## Installation
 
@@ -21,10 +27,6 @@ Or add to `~/.pi/agent/settings.json`:
 ```
 
 Requires pi 0.84.3 or later. After changing extension source or loading configuration, run `/reload` or restart pi.
-
-## Dependencies
-
-None. The extension uses the pi framework packages supplied by the host.
 
 ## Tool and transport
 
@@ -105,3 +107,4 @@ npx tsc --noEmit
 Default tests use pure functions and an injected in-memory filesystem. Upstream fixture files are read from the repository, with explicit expectations for the tool's prevalidation and the default line-ending mode. Protocol tests exercise pi's local conversion helpers without network calls.
 
 Integration tests use temporary sandbox directories and clean them up. They exercise actual file operations, symlink boundaries, UTF-8 decoding, and shared mutation queues. They do not call a model. Live model acceptance requires loading the extension first.
+
