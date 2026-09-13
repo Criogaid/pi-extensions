@@ -217,15 +217,14 @@ interface GitDirty {
 }
 let _gitDirty: GitDirty | undefined;
 
-/** Parse `git status --porcelain` output into staged, unstaged, and untracked counts. */
-function parseGitPorcelain(stdout: string): GitDirty {
-  const lines = stdout.trim();
-  if (!lines) return { staged: 0, unstaged: 0, untracked: 0 };
-
+/** Parse `git status --porcelain` output into staged, unstaged, and untracked counts.
+ *  @internal — exported for testing. */
+export function parseGitPorcelain(stdout: string): GitDirty {
   let staged = 0;
   let unstaged = 0;
   let untracked = 0;
-  for (const line of lines.split("\n")) {
+  // Leading spaces encode the index status and must be preserved.
+  for (const line of stdout.split("\n")) {
     if (line.length < 2) continue;
     const x = line[0];
     const y = line[1];
