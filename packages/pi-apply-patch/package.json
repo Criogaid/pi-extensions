@@ -1,6 +1,6 @@
 {
   "name": "@d3ara1n/pi-apply-patch",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "type": "module",
   "description": "Codex-compatible freeform apply_patch editing within the current pi workspace",
   "keywords": [
