@@ -1,70 +1,86 @@
-/**
- * PeekAPI singleton — LOCAL consult capability only.
- *
- * Assembles serialize + investigate + tracker. State stored on globalThis
- * (key __piPeek) to survive module identity mismatches (extension loaded by
- * absolute path vs import via workspace symlink). getPeekAPI() provides
- * type-safe access; consumers never touch globalThis.
- *
- * No cross-instance machinery here — that lives in @d3ara1n/pi-peek-agent,
- * which calls PeekAPI.investigate() to serve remote asks.
- */
-
-import { serializeConversation } from "./serialize.ts";
-import { investigateWithReference } from "./investigate.ts";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getModelRolesAPI, type ModelRolesAPI } from "@d3ara1n/pi-model-roles";
+import { createConsult } from "./investigate.ts";
+import { SessionSnapshot } from "./snapshot.ts";
 import * as tracker from "./tracker.ts";
-import type {
-  InvestigateOptions,
-  InvestigateResult,
-  MainAgentStatus,
-  PeekAPI,
-  PeekConfig,
-} from "./types.ts";
+import type { PeekAPI, PeekConfig, PeekConsult } from "./types.ts";
 import { DEFAULT_PEEK_CONFIG, PEEK_GLOBAL_KEY } from "./types.ts";
 
+type LiveAPI = PeekAPI & { shutdown(): void };
+
+/** @internal Dependencies for the session-scoped API. */
 export interface PeekDeps {
-  /** Read-only session manager (for serialize). */
-  sessionManager: any;
-  /** Resolved config (already merged with defaults). */
+  sessionManager: Pick<ExtensionContext["sessionManager"], "getBranch">;
   config: PeekConfig;
+  modelRoles?: Pick<ModelRolesAPI, "resolveRole" | "streamWithRole">;
 }
 
 export function initPeekAPI(deps: PeekDeps): PeekAPI {
+  shutdownPeekAPI();
   const cfg = { ...DEFAULT_PEEK_CONFIG, ...deps.config };
-  const sessionManager = deps.sessionManager;
-
-  const api: PeekAPI = {
-    serializeMainConversation(): string {
-      const branch = sessionManager?.getBranch?.() ?? [];
-      return serializeConversation(branch, cfg);
+  const consults = new Set<PeekConsult>();
+  let closed = false;
+  const capture = () => {
+    if (closed) throw new Error("peek: session has closed.");
+    return new SessionSnapshot(deps.sessionManager.getBranch());
+  };
+  const api: LiveAPI = {
+    createConsult(options = {}) {
+      if (closed) throw new Error("peek: session has closed.");
+      const roles = deps.modelRoles ?? getModelRolesAPI();
+      const { model } = roles.resolveRole(cfg.role);
+      if (!model) throw new Error(`peek: model unavailable for role "${cfg.role}".`);
+      const inner = createConsult({
+        snapshot: capture(), model, config: cfg, includeThinking: options.includeThinking,
+        stream: (context, options) => roles.streamWithRole(cfg.role, context, { ...options, model }),
+      });
+      const consult: PeekConsult = {
+        snapshotAt: inner.snapshotAt,
+        ask: (question, options) => inner.ask(question, options),
+        dispose() {
+          inner.dispose();
+          consults.delete(consult);
+        },
+      };
+      consults.add(consult);
+      return consult;
     },
-
-    async investigate(question, opts: InvestigateOptions = {}): Promise<InvestigateResult> {
-      const ref = opts.referenceText ?? api.serializeMainConversation();
-      return investigateWithReference(ref, question, { ...opts, role: opts.role ?? cfg.role });
+    async investigate(question, options) {
+      const consult = api.createConsult(options);
+      try {
+        return await consult.ask(question, options);
+      } finally {
+        consult.dispose();
+      }
     },
-
-    getMainAgentStatus(): MainAgentStatus {
-      return tracker.getMainAgentStatus();
+    serializeMainConversation(options = {}) {
+      const snapshot = capture();
+      try { return snapshot.reference(options.includeThinking); }
+      finally { snapshot.dispose(); }
+    },
+    getMainAgentStatus: tracker.getMainAgentStatus,
+    shutdown() {
+      closed = true;
+      for (const consult of consults) consult.dispose();
     },
   };
-
   (globalThis as any)[PEEK_GLOBAL_KEY] = api;
   return api;
 }
 
-/** Get the initialized PeekAPI. Throws if initPeekAPI() hasn't run. */
+/** @internal Release ephemeral consults on shutdown/reload. */
+export function shutdownPeekAPI(): void {
+  const api = (globalThis as any)[PEEK_GLOBAL_KEY] as LiveAPI | undefined;
+  api?.shutdown?.();
+  delete (globalThis as any)[PEEK_GLOBAL_KEY];
+}
+
 export function getPeekAPI(): PeekAPI {
-  const api = (globalThis as any)[PEEK_GLOBAL_KEY] as PeekAPI | undefined;
-  if (!api) {
-    throw new Error(
-      "PeekAPI not initialized. Ensure @d3ara1n/pi-peek extension is loaded and session_start has fired.",
-    );
-  }
+  const api = tryGetPeekAPI();
+  if (!api) throw new Error("PeekAPI not initialized. Load @d3ara1n/pi-peek and wait for session_start.");
   return api;
 }
 
-/** Non-throwing getter (for hooks that fire before session_start). */
 export function tryGetPeekAPI(): PeekAPI | undefined {
   return (globalThis as any)[PEEK_GLOBAL_KEY] as PeekAPI | undefined;
 }

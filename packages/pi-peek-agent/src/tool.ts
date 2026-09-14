@@ -24,11 +24,10 @@ import { ASK_TYPE } from "./types.ts";
 import type { AskResponseData } from "./types.ts";
 
 /** Build a tool result (AgentToolResult requires a `details` field). */
-function textResult(text: string, isError = false) {
+function textResult(text: string) {
   return {
     content: [{ type: "text" as const, text }],
     details: undefined as unknown,
-    isError,
   };
 }
 
@@ -39,7 +38,8 @@ export function registerPeekTool(pi: ExtensionAPI): void {
     description:
       "Peek at another pi instance — observe its session without disturbing it. " +
       "Read-only: a helper model answers from the peer's existing session record; the peer's agent is never involved and never learns you asked. " +
-      "Use for checking progress, confirming details, or understanding what a peer has said and done so far. " +
+      "Use for focused summaries, explanations, or details in saved tool evidence that the peer did not mention in its replies. " +
+      "Each call uses a fresh snapshot; include enough context for follow-up questions. " +
       "Not for communication or coordination — the peer cannot see your question and cannot act on it. " +
       "Use mesh_list first to discover names.",
     promptSnippet: "Observe another pi instance's session without disturbing it",
@@ -49,6 +49,9 @@ export function registerPeekTool(pi: ExtensionAPI): void {
         description:
           "What you want to find out from the peer's existing session record (e.g. 'What is it working on right now?'). The peer's agent never sees this question.",
       }),
+      includeThinking: Type.Optional(Type.Boolean({
+        description: "Include readable thinking saved in the session. Default false; unavailable or redacted thinking cannot be recovered.",
+      })),
       at: Type.Optional(
         Type.String({
           description:
@@ -77,7 +80,7 @@ export function registerPeekTool(pi: ExtensionAPI): void {
         : isError
           ? theme.fg("error", "✗")
           : theme.fg("success", "✓");
-      const text = result.content[0]?.type === "text" ? result.content[0].text : "(no output)";
+      const text = result.content.filter(block => block.type === "text").map(block => block.text).join("\n\n") || "(no output)";
 
       if (expanded) {
         const c = new Container();
@@ -114,20 +117,19 @@ export function registerPeekTool(pi: ExtensionAPI): void {
       } satisfies Component;
     },
 
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
+      signal?.throwIfAborted();
       const mesh = getMeshAPI();
       const resolved = await mesh.resolvePeer({
         at: params.at,
         sessionId: params.sessionId,
       });
 
+      signal?.throwIfAborted();
       if (!resolved) {
-        return textResult(
-          params.at
-            ? `No online peer named '${params.at}'. Call mesh_list to see who's online.`
-            : "No other pi instance available to peek.",
-          true,
-        );
+        throw new Error(params.at
+          ? `No online peer named '${params.at}'. Call mesh_list to see who's online.`
+          : "No other pi instance available to peek.");
       }
 
       // Name collision → return candidates so the LLM disambiguates with sessionId.
@@ -148,21 +150,33 @@ export function registerPeekTool(pi: ExtensionAPI): void {
       try {
         const conn = await mesh.connect(peer);
         try {
+          signal?.throwIfAborted();
           const result = await conn.request(
             ASK_TYPE,
-            { question: params.question },
-            { signal, timeoutMs: cfg.askTimeoutMs },
+            { question: params.question, ...(params.includeThinking === true ? { includeThinking: true } : {}) },
+            {
+              signal, timeoutMs: cfg.askTimeoutMs,
+              onEmit: (type, data) => {
+                if (type === "stage" && data && typeof data === "object" && "stage" in data && typeof data.stage === "string") {
+                  onUpdate?.(textResult(`Peek ${peer.name}: ${data.stage}`));
+                }
+              },
+            },
           );
-          const answer = (result as AskResponseData | undefined)?.answer ?? "";
-          return textResult(answer);
+          const response = result as AskResponseData | undefined;
+          const resultText = textResult(response?.answer ?? "");
+          if (response?.stopReason === "length") {
+            resultText.content.push({ type: "text", text: "Output limit reached; the answer is incomplete." });
+          }
+          return {
+            ...resultText,
+            details: response ? { snapshotAt: response.snapshotAt, stopReason: response.stopReason, usage: response.usage } : undefined,
+          };
         } finally {
           conn.close();
         }
       } catch (err) {
-        return textResult(
-          `peek ${peer.name} failed: ${err instanceof Error ? err.message : String(err)}`,
-          true,
-        );
+        throw new Error(`peek ${peer.name} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     },
   });

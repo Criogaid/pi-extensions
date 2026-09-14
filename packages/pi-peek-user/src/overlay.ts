@@ -35,13 +35,12 @@ import {
   visibleWidth,
   wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
-import { getPeekAPI, type InvestigateResult, type MainAgentStatus } from "@d3ara1n/pi-peek";
+import { getPeekAPI, type InvestigateResult, type MainAgentStatus, type PeekAPI, type PeekConsult, type PeekReferenceOptions } from "@d3ara1n/pi-peek";
 import {
   getMarkdownTheme,
   type ExtensionContext,
   type ThemeColor,
 } from "@earendil-works/pi-coding-agent";
-import { buildPeekHistoryMessages, type PeekReferenceHistoryEntry } from "./reference.ts";
 
 /** Minimal slice of TUI we use: render trigger + terminal size. */
 interface PeekTui {
@@ -57,10 +56,13 @@ interface PeekTheme {
   bold(text: string): string;
 }
 
-interface HistoryItem extends PeekReferenceHistoryEntry {
+interface HistoryItem {
+  role: "user" | "assistant";
+  text: string;
   usage?: InvestigateResult["usage"];
   model?: string;
   markdown?: Markdown;
+  notice?: string;
 }
 
 type Mode = "input" | "asking";
@@ -79,7 +81,8 @@ export class PeekOverlay {
   private theme: PeekTheme;
   private done: () => void;
   private ctx: ExtensionContext;
-  private api = getPeekAPI();
+  private api: PeekAPI;
+  private referenceOptions: PeekReferenceOptions;
 
   private mode: Mode = "input";
   private editor!: Editor;
@@ -92,8 +95,8 @@ export class PeekOverlay {
   private markdownTheme = getMarkdownTheme();
   private streamMarkdown = new Markdown("", 0, 0, this.markdownTheme);
 
-  // cached reference for this overlay's follow-up questions
-  private referenceText: string | null = null;
+  // The consult owns the full reference and model history; this history is for display.
+  private consult: PeekConsult | null = null;
   private requestGeneration = 0;
   private requestAbort: AbortController | null = null;
 
@@ -113,7 +116,9 @@ export class PeekOverlay {
   // last utility model used (status line before the first answer)
   private lastUtilityModel: string | null = null;
 
-  constructor(tui: PeekTui, theme: PeekTheme, done: () => void, ctx: ExtensionContext) {
+  constructor(tui: PeekTui, theme: PeekTheme, done: () => void, ctx: ExtensionContext, api: PeekAPI = getPeekAPI(), referenceOptions: PeekReferenceOptions = {}) {
+    this.api = api;
+    this.referenceOptions = referenceOptions;
     this.tui = tui;
     this.theme = theme;
     this.done = done;
@@ -245,11 +250,10 @@ export class PeekOverlay {
     if (!q) return;
 
     this.mode = "asking";
-    this.stage = "investigating";
+    this.stage = "answering";
     this.askStart = Date.now();
     this.streamText = "";
     this.streamMarkdown.setText("");
-    const priorHistory = this.history.slice();
     this.history.push({ role: "user", text: q });
     this.activeUserAnchorIndex = null;
     this.autoFollow = true;
@@ -258,14 +262,10 @@ export class PeekOverlay {
     const generation = ++this.requestGeneration;
     const requestAbort = new AbortController();
     this.requestAbort = requestAbort;
-    const referenceText = this.referenceText ?? this.api.serializeMainConversation();
-    this.referenceText = referenceText;
-    const messages = buildPeekHistoryMessages(priorHistory);
-
-    this.api
-      .investigate(q, {
-        referenceText,
-        messages,
+    Promise.resolve().then(() => {
+      if (this.closed) throw new Error("peek: overlay closed.");
+      this.consult ??= this.api.createConsult(this.referenceOptions);
+      return this.consult.ask(q, {
         signal: requestAbort.signal,
         onStage: (s) => {
           if (this.closed || generation !== this.requestGeneration) return;
@@ -278,13 +278,15 @@ export class PeekOverlay {
           this.streamMarkdown.setText(this.streamText);
           this.tui.requestRender();
         },
-      })
+      });
+    })
       .then((result) => {
         if (this.requestAbort === requestAbort) this.requestAbort = null;
         if (this.closed || generation !== this.requestGeneration) return;
         this.history.push({
           role: "assistant",
           text: result.answer,
+          notice: result.stopReason === "length" ? "Output limit reached" : undefined,
           usage: result.usage,
           model: result.model,
           markdown: new Markdown(result.answer, 0, 0, this.markdownTheme),
@@ -299,11 +301,13 @@ export class PeekOverlay {
       .catch((err) => {
         if (this.requestAbort === requestAbort) this.requestAbort = null;
         if (this.closed || generation !== this.requestGeneration) return;
+        const overflow = err?.code === "context_overflow";
         const msg = err instanceof Error ? err.message : String(err);
-        const text = `Error: ${msg}`;
+        const text = overflow ? "" : `Error: ${msg}`;
         this.history.push({
           role: "assistant",
           text,
+          notice: overflow ? "Context limit reached" : undefined,
           markdown: new Markdown(text, 0, 0, this.markdownTheme),
         });
         this.mode = "input";
@@ -322,7 +326,12 @@ export class PeekOverlay {
     this.requestGeneration++;
     this.requestAbort?.abort();
     this.requestAbort = null;
-    this.referenceText = null;
+    this.consult?.dispose();
+    this.consult = null;
+    this.history = [];
+    this.streamText = "";
+    this.streamMarkdown.setText("");
+    this.bodyLines = [];
     if (this.trackerTimer) {
       clearInterval(this.trackerTimer);
       this.trackerTimer = null;
@@ -377,9 +386,7 @@ export class PeekOverlay {
 
     if (this.history.length === 0 && this.mode !== "asking") {
       // Welcome / placeholder so the body isn't an empty hole on first open.
-      const welcome =
-        "Ask anything about this session. peek answers from the current conversation context " +
-        "via the utility model — the main agent is never disturbed.";
+      const welcome = "Ask about this session.";
       this.bodyLines.push(th.fg("dim", "aside · read-after-burn"));
       for (const ln of wrapTextWithAnsi(th.fg("dim", welcome), wrapW)) {
         this.bodyLines.push(ln);
@@ -392,9 +399,9 @@ export class PeekOverlay {
           const rule = "─".repeat(Math.max(0, wrapW - visibleWidth(label)));
           this.bodyLines.push(th.fg("accent", `${label}${rule}`));
         } else {
-          const label = " peek ";
+          const label = h.notice ? ` peek · ${h.notice} ` : " peek ";
           const rule = "─".repeat(Math.max(0, wrapW - visibleWidth(label)));
-          this.bodyLines.push(th.fg("success", `${label}${rule}`));
+          this.bodyLines.push(th.fg(h.notice ? "warning" : "success", `${label}${rule}`));
         }
         if (h.role === "assistant") {
           h.markdown ??= new Markdown(h.text, 0, 0, this.markdownTheme);
@@ -409,8 +416,7 @@ export class PeekOverlay {
 
     if (this.mode === "asking") {
       const elapsed = ((Date.now() - this.askStart) / 1000).toFixed(1);
-      const stateText =
-        this.stage === "done" ? "done" : this.stage === "error" ? "error" : "investigating";
+      const stateText = this.stage || "answering";
       const stateLabel =
         this.stage === "done"
           ? th.fg("success", stateText)

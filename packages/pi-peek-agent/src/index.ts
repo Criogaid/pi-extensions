@@ -33,13 +33,14 @@ export default function registerPeekAgentExtension(pi: ExtensionAPI): void {
     if (registered) return;
     registered = true;
     mesh.serve(ASK_TYPE, async (data, emit) => {
-      const { question } = (data ?? {}) as AskRequestData;
+      const { question, includeThinking } = (data ?? {}) as AskRequestData;
       const peekApi = getPeekAPI();
-      const { answer } = await peekApi.investigate(question ?? "", {
+      const result = await peekApi.investigate(question ?? "", {
+        includeThinking: includeThinking === true,
         onToken: (delta) => emit("token", { delta }),
         onStage: (stage) => emit("stage", { stage }),
       });
-      return { answer } satisfies AskResponseData;
+      return { answer: result.answer, snapshotAt: result.snapshotAt, usage: result.usage, stopReason: result.stopReason } satisfies AskResponseData;
     });
   }
 

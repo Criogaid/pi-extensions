@@ -13,14 +13,18 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { initPeekAPI } from "./api.ts";
+import { initPeekAPI, shutdownPeekAPI } from "./api.ts";
 import * as tracker from "./tracker.ts";
 import { loadPeekConfig } from "./config.ts";
 
 export { getPeekAPI } from "./api.ts";
+export { PeekContextOverflowError } from "./types.ts";
 export type {
+  AskOptions,
+  PeekReferenceOptions,
   PeekAPI,
-  InvestigateMessage,
+  PeekConsult,
+  InvestigateStage,
   MainAgentStatus,
   InvestigateOptions,
   InvestigateResult,
@@ -34,6 +38,8 @@ export default function registerPeekExtension(pi: ExtensionAPI): void {
       config: loadPeekConfig(ctx.cwd),
     });
   });
+
+  pi.on("session_shutdown", () => shutdownPeekAPI());
 
   // ── tracker hooks (fire every turn; feed the status snapshot) ─────────
   pi.on("turn_start", (event) => tracker.onTurnStart(event.turnIndex));

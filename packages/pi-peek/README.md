@@ -2,16 +2,41 @@
 
 [![npm version](https://img.shields.io/npm/v/@d3ara1n/pi-peek)](https://www.npmjs.com/package/@d3ara1n/pi-peek) [![npm downloads](https://img.shields.io/npm/dm/@d3ara1n/pi-peek)](https://www.npmjs.com/package/@d3ara1n/pi-peek) [![license](https://img.shields.io/npm/l/@d3ara1n/pi-peek)](https://www.npmjs.com/package/@d3ara1n/pi-peek)
 
-Core capability extension for [pi](https://github.com/earendil-works/pi) — serialize the main conversation and answer questions about it via the utility model, read-after-burn.
+Full-context session questions for [pi](https://github.com/earendil-works/pi): focused summaries, explanations, and details from saved tool evidence that the main assistant may not have mentioned.
 
-**Core extension**: registers tracker hooks but **no tools, no commands**. It is consumed by [`pi-peek-user`](../pi-peek-user) (local `/peek` overlay) and [`pi-peek-agent`](../pi-peek-agent) (cross-instance mesh). Installing this alone does nothing user-visible, but it must be loaded for consumers to work.
+**Core extension**: registers lifecycle/tracker hooks, but no tools or commands. Load it alongside [`pi-peek-user`](../pi-peek-user) for local questions or [`pi-peek-agent`](../pi-peek-agent) for cross-instance questions.
 
-## What it does
+## Design
 
-- **Serialize** the current main conversation branch into compact reference text (turns + tool calls, per-tool-result truncation)
-- **Investigate**: stream a consult to the `utility` model role with the record as background context and the question as the standalone user message
-- **Tracker**: live snapshot of the local main agent's activity (tool name, turn index), hook-driven
-- **Read-after-burn**: nothing is persisted, no session file is touched, the main agent is never disturbed
+Peek sends the complete supported text of the current branch to a **large-context utility model**, then makes one streaming completion per question. It is a session information view, not a retrieval agent: no internal tools, search loop, pagination, automatic compression, or application-level text/token-budget truncation.
+
+The model should have enough context for the source session and any follow-up questions. A fast, inexpensive model is appropriate; autonomous investigation or reasoning capability is not required.
+
+### Included information
+
+- User messages and assistant text
+- Full saved tool-call arguments and result text, call IDs and error status
+- Saved patch evidence (`diff`, `patch`, per-file changes under `files`) and truncation/full-output-path metadata
+- Recorded user shell executions, including those marked `excludeFromContext`
+- Compaction summaries and retained messages, branch summaries, and extension-injected context messages
+
+Thinking is excluded by default. Callers can explicitly include readable thinking saved in the session; missing/redacted thinking and opaque signatures are never reconstructed or exposed. The source model may not save any readable thinking at all.
+
+Images, the main system prompt, extension-private state, other branches, and external files/logs are not included. Text already missing from a saved tool result cannot be recovered. Compaction checkpoints may repeat records also present in the original history.
+
+### Follow-ups and limits
+
+A consult pins its complete snapshot and resolved model. Each follow-up sends that same reference plus the prior consult questions and answers. A failed request leaves prior successful turns intact. Close and reopen to capture newer source messages.
+
+Peek requests the model's declared output allowance rather than imposing a smaller custom cap. Provider/SDK limits still apply:
+
+- **Output limit:** preserve the partial answer and return `stopReason: "length"` separately. No automatic continuation or warning appended to the answer.
+- **Context limit:** surface a recognized upstream overflow as `PeekContextOverflowError` (`code: "context_overflow"`). Do not trim history, compress, or automatically retry. A sufficiently long source session can exceed the model context on the first question.
+- **Other failures:** preserve the error rather than guessing it was a context overflow. Silent provider-side truncation cannot always be detected.
+
+The stable reference and append-only question/answer history are cache-friendly. Capture time is carried with the first question, outside the large system prefix. Requests use `cacheRetention: "short"`; cache support, pricing, and retention depend on the provider.
+
+**Read-after-burn means no local persistence by this extension.** Closing releases the reference and history; shutdown aborts active consults. Model-provider retention is separate, and a remote caller may save its returned answer in its own session.
 
 ## Installation
 
@@ -20,9 +45,9 @@ pi install npm:@d3ara1n/pi-model-roles
 pi install npm:@d3ara1n/pi-peek
 ```
 
-Both are extensions and must be loaded in `~/.pi/agent/settings.json`:
+Or add to `~/.pi/agent/settings.json`:
 
-```json
+```jsonc
 {
   "extensions": [
     "/absolute/path/to/pi-extensions/packages/pi-model-roles",
@@ -33,43 +58,53 @@ Both are extensions and must be loaded in `~/.pi/agent/settings.json`:
 
 ## Dependencies
 
-- [`@d3ara1n/pi-model-roles`](../pi-model-roles) — resolves the `utility` model role
+- [`@d3ara1n/pi-model-roles`](../pi-model-roles) — model selection, authentication, streaming, and configured reasoning level; must be loaded as an extension
 
 ## Configuration
 
-Optional tuning in `~/.pi/agent/settings.json` under `peek`:
+Optional `peek` block in global or project settings. The project block replaces the global block wholesale; omitted fields use defaults.
 
 ```json
 {
   "peek": {
-    "recentTurns": 10,
-    "toolResultLimit": 500,
-    "role": "utility"
+    "role": "utility",
+    "timeoutMs": 90000
   }
 }
 ```
 
-`recentTurns` and `toolResultLimit` control serialization; invalid numeric values fall back to defaults. `role` selects the pi-model-roles role used for consults.
+`timeoutMs` is the request deadline, including authentication and streaming. It controls waiting time, not content size. Numeric values must be finite and at least 1; fractional values are floored. Legacy content-budget settings such as `recentTurns` and `toolResultLimit` are ignored.
 
-## API (for extension authors)
+Configure a large-context model for the selected role in pi-model-roles. Its reasoning setting controls the utility model's own generation, independently of whether saved source thinking is included.
+
+## API
 
 ```typescript
 import { getPeekAPI } from "@d3ara1n/pi-peek";
 
 const api = getPeekAPI();
 
-// One-shot consult: serialize + stream to the utility model
-const result = await api.investigate("How is debounce implemented here?", {
-  onToken: (delta) => { /* stream chunks */ },
-  onStage: (stage) => { /* "investigating" | "done" | "error" */ },
-});
-// result.answer / result.model / result.usage
+// One completion, then dispose the temporary consult.
+const result = await api.investigate("What did the final reply leave out?");
 
-// Current main-agent activity (driven by agent_start/tool_execution_*/turn_end hooks)
-api.getMainAgentStatus();   // { activity, toolName, toolIndex, turn, lastUpdated }
+// Explicitly include readable thinking saved in the source session.
+await api.investigate("Explain the recorded reasoning.", { includeThinking: true });
+
+// User-driven follow-ups: one completion per ask, one fixed reference.
+const consult = api.createConsult(); // Or { includeThinking: true }.
+try {
+  await consult.ask("Summarize the authentication work.");
+  const detail = await consult.ask("Explain the failed test.", {
+    onToken: delta => { /* append answer text */ },
+    onStage: stage => { /* answering / done / error */ },
+  });
+  // Render detail.answer unchanged; show a separate notice if stopReason === "length".
+} finally {
+  consult.dispose();
+}
 ```
 
-`investigate()` is entry-point-agnostic (pure function over reference text + question): both the local overlay and the cross-instance IPC server call it directly.
+Calls within one consult must be sequential. `serializeMainConversation({ includeThinking? })` returns the complete supported text reference. `getMainAgentStatus()` returns live main-agent activity, independently of the fixed consult snapshot.
 
 ## License
 

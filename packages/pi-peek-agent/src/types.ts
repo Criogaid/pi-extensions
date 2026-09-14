@@ -28,8 +28,12 @@ export const ASK_TYPE = "ask";
 
 export interface AskRequestData {
   question: string;
+  includeThinking?: boolean;
 }
 
 export interface AskResponseData {
   answer: string;
+  snapshotAt?: string;
+  stopReason?: "stop" | "length";
+  usage?: import("@d3ara1n/pi-peek").InvestigateResult["usage"];
 }

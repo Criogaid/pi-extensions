@@ -2,9 +2,8 @@
  * Read peek configuration from settings files.
  *
  * Global (~/.pi/agent/settings.json) + project (.pi/settings.json), project
- * overrides global. Mirrors pi-subagent's config loading. Only serialize-tuning
- * lives here; cross-instance config (registry/heartbeat/timeout) belongs to
- * pi-peek-agent.
+ * replaces global wholesale. Model role and request deadline live here; transport wait timeouts
+ * belong to pi-peek-agent.
  */
 
 import { CONFIG_DIR_NAME, getAgentDir } from "@earendil-works/pi-coding-agent";
@@ -25,11 +24,11 @@ function readSettingsFile(filePath: string): any {
 /** Read the `peek` block from a settings file. */
 function readPeek(filePath: string): Record<string, any> | undefined {
   const raw = readSettingsFile(filePath)?.peek;
-  return raw && typeof raw === "object" ? raw : undefined;
+  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : undefined;
 }
 
 function positiveInteger(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value) && value > 0
+  return typeof value === "number" && Number.isFinite(value) && value >= 1
     ? Math.floor(value)
     : fallback;
 }
@@ -48,8 +47,7 @@ export function loadPeekConfig(cwd?: string): PeekConfig {
   if (!raw) return { ...DEFAULT_PEEK_CONFIG };
 
   return {
-    recentTurns: positiveInteger(raw.recentTurns, DEFAULT_PEEK_CONFIG.recentTurns),
-    toolResultLimit: positiveInteger(raw.toolResultLimit, DEFAULT_PEEK_CONFIG.toolResultLimit),
+    timeoutMs: Math.min(positiveInteger(raw.timeoutMs, DEFAULT_PEEK_CONFIG.timeoutMs), 2_147_483_647),
     role: roleName(raw.role, DEFAULT_PEEK_CONFIG.role),
   };
 }

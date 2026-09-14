@@ -45,32 +45,39 @@ afterEach(() => {
 test("loadPeekConfig floors valid numeric values and falls back for invalid values", () => {
   writeJson(path.join(globalDir, "settings.json"), {
     peek: {
-      recentTurns: 7.9,
-      toolResultLimit: -1,
+      timeoutMs: 70_000.9,
       role: "  reviewer  ",
     },
   });
 
   assert.deepEqual(loadPeekConfig(projectDir), {
-    recentTurns: 7,
-    toolResultLimit: DEFAULT_PEEK_CONFIG.toolResultLimit,
+    ...DEFAULT_PEEK_CONFIG,
+    timeoutMs: 70_000,
     role: "reviewer",
   });
 });
 
 test("loadPeekConfig lets a project block replace global fields wholesale", () => {
   writeJson(path.join(globalDir, "settings.json"), {
-    peek: { recentTurns: 20, toolResultLimit: 1_000, role: "global" },
+    peek: { timeoutMs: 200_000, role: "global" },
   });
   writeJson(path.join(projectDir, ".pi", "settings.json"), {
-    peek: { recentTurns: 3.2 },
+    peek: { timeoutMs: 30_000.2 },
   });
 
   assert.deepEqual(loadPeekConfig(projectDir), {
-    recentTurns: 3,
-    toolResultLimit: DEFAULT_PEEK_CONFIG.toolResultLimit,
-    role: DEFAULT_PEEK_CONFIG.role,
+    ...DEFAULT_PEEK_CONFIG,
+    timeoutMs: 30_000,
   });
+});
+
+test("config bounds timer values and ignores legacy content budgets", () => {
+  writeJson(path.join(globalDir, "settings.json"), {
+    peek: { recentTurns: 1, referenceChars: 10, maxOutputTokens: 20, timeoutMs: 3_000_000_000 },
+  });
+  assert.deepEqual(loadPeekConfig(projectDir), { role: "utility", timeoutMs: 2_147_483_647 });
+  writeJson(path.join(globalDir, "settings.json"), { peek: { timeoutMs: 0.5 } });
+  assert.deepEqual(loadPeekConfig(projectDir), DEFAULT_PEEK_CONFIG);
 });
 
 test("tracker reports tool activity and ignores an unrelated tool completion", () => {

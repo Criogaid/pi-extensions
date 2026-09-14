@@ -17,13 +17,14 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { paletteCommandRegistry } from "@d3ara1n/pi-command-palette-core";
 import { PeekOverlay } from "./overlay.ts";
+import type { PeekReferenceOptions } from "@d3ara1n/pi-peek";
 
-async function openPeekOverlay(ctx: ExtensionContext): Promise<void> {
+async function openPeekOverlay(ctx: ExtensionContext, options: PeekReferenceOptions = {}): Promise<void> {
   if (ctx.mode !== "tui") {
     if (ctx.hasUI) ctx.ui.notify("peek overlay requires TUI mode", "warning");
     return;
   }
-  await ctx.ui.custom<void>((tui, theme, _kb, done) => new PeekOverlay(tui, theme, done, ctx), {
+  await ctx.ui.custom<void>((tui, theme, _kb, done) => new PeekOverlay(tui, theme, done, ctx, undefined, options), {
     overlay: true,
     overlayOptions: {
       anchor: "center",
@@ -39,6 +40,13 @@ export default function registerPeekUserExtension(pi: ExtensionAPI): void {
     description: "Aside consult: ask this session a question without disturbing the main agent",
     handler: async (_args, ctx: ExtensionContext) => {
       await openPeekOverlay(ctx);
+    },
+  });
+
+  pi.registerCommand("peek:thinking", {
+    description: "Ask this session with its recorded thinking included",
+    handler: async (_args, ctx: ExtensionContext) => {
+      await openPeekOverlay(ctx, { includeThinking: true });
     },
   });
 
