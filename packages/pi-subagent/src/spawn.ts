@@ -14,6 +14,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { appendActivity, consumeSteer } from "./activity.ts";
+import { startupFailureMessage } from "./utils.ts";
 import type { SubagentControl, SubagentMessage, SubagentResult } from "./types.ts";
 
 const PI_CODING_AGENT_PACKAGE = "@earendil-works/pi-coding-agent";
@@ -717,9 +718,19 @@ export async function spawnSubagent(
       liveChildren.add(p);
       reapChildrenOnExit();
 
+      // A child dying is normal here (timeout, budget, abort, crash), and a
+      // write to its dead stdin fails ASYNCHRONOUSLY: the EPIPE arrives as an
+      // 'error' event on the pipe, which no try/catch around write() can
+      // intercept. Left unhandled, that event becomes an uncaughtException and
+      // takes down the whole pi process. Swallow it on every stdio stream —
+      // the exit code and stderr below carry the real diagnosis.
+      p.stdin?.on("error", () => {});
+      p.stdout?.on("error", () => {});
+      p.stderr?.on("error", () => {});
+
       // Expose the stdin control channel (steering) to the owner. Writes are
-      // fire-and-forget: once the child is gone the try/catch in sendCommand
-      // swallows EPIPE.
+      // fire-and-forget: once the child is gone the stdin 'error' handler
+      // above swallows the EPIPE.
       options.onControl?.({
         steer(message: string) {
           if (processExited || terminationRequested) return;
@@ -768,6 +779,24 @@ export async function spawnSubagent(
         const externalKill = signal !== null && !budgetExceeded && !wasTimeout && !wasAborted;
         if (externalKill) {
           result.errorMessage = result.errorMessage || `Subagent killed by signal ${signal}`;
+          result.stopReason = "error";
+        }
+
+        // Died before producing anything: no completed turn, no tool call, no
+        // thinking block. The child never got started, so the cause is on its
+        // stderr (unloadable extension, bad flag, missing model) — surface it
+        // instead of leaving the caller with a bare exit code.
+        const diedBeforeOutput =
+          !result.errorMessage &&
+          signal === null &&
+          !budgetExceeded &&
+          !wasTimeout &&
+          !wasAborted &&
+          (code ?? 0) !== 0 &&
+          result.usage.turns === 0 &&
+          result.activityLog.length === 0;
+        if (diedBeforeOutput) {
+          result.errorMessage = startupFailureMessage(code, result.stderr);
           result.stopReason = "error";
         }
 

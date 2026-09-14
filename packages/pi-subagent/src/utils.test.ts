@@ -29,6 +29,8 @@ import {
   buildFallbackFrom,
   formatFallback,
   FALLBACK_STDERR_TAIL,
+  STARTUP_STDERR_TAIL,
+  startupFailureMessage,
   deriveRunState,
   isWaitTimedOut,
   describeCurrentActivity,
@@ -157,6 +159,39 @@ describe("isProviderError", () => {
   });
   test("checks errorMessage too, not just stderr", () => {
     assert.equal(isProviderError(mk("", "rate limited")), true);
+  });
+});
+
+// ── startupFailureMessage: makes a child's startup death legible ──
+describe("startupFailureMessage", () => {
+  test("carries the stderr cause and the exit code", () => {
+    const msg = startupFailureMessage(
+      1,
+      'Error: Failed to load extension "/tmp/x/src/index.ts": Unexpected token\nHint: Start without extensions using "pi -ne".\n',
+    );
+    assert.match(msg, /^Subagent exited with code 1 before producing any output: /);
+    assert.match(msg, /Failed to load extension/);
+  });
+
+  test("prefers the provider-error line over the raw tail", () => {
+    const msg = startupFailureMessage(1, "booting\n429 Too Many Requests\nbye");
+    assert.match(msg, /429 Too Many Requests/);
+    assert.doesNotMatch(msg, /booting/);
+  });
+
+  test("strips ANSI escapes and caps the tail", () => {
+    const noisy = `\u001b[31m${"x".repeat(STARTUP_STDERR_TAIL * 2)}\u001b[0m`;
+    const msg = startupFailureMessage(3, noisy);
+    assert.doesNotMatch(msg, /\u001b/);
+    assert.ok(msg.length <= `Subagent exited with code 3 before producing any output: `.length + STARTUP_STDERR_TAIL);
+  });
+
+  test("a silent death still names the exit code", () => {
+    assert.equal(
+      startupFailureMessage(9, "  \n "),
+      "Subagent exited with code 9 before producing any output (no stderr output)",
+    );
+    assert.match(startupFailureMessage(null, ""), /code unknown/);
   });
 });
 

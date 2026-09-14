@@ -589,6 +589,30 @@ export function extractProviderReason(text: string): string | undefined {
   return undefined;
 }
 
+/** Cap for the stderr tail kept in a startup-failure diagnostic. */
+export const STARTUP_STDERR_TAIL = 500;
+
+/**
+ * Diagnosis for a child that exited non-zero before producing any agent output.
+ * Nothing ever started a turn, so the failure is in getting the child running
+ * (unloadable extension, bad flag, missing model) and the cause lives only on
+ * its stderr — without this the caller sees nothing but a bare exit code.
+ * Prefers the last provider-error-looking line; falls back to a short,
+ * escape-stripped stderr tail.
+ */
+export function startupFailureMessage(code: number | null, stderr: string): string {
+  const reason =
+    extractProviderReason(stderr) ?? tailWithoutEscapes(stderr, STARTUP_STDERR_TAIL);
+  const where = `Subagent exited with code ${code ?? "unknown"} before producing any output`;
+  return reason ? `${where}: ${reason}` : `${where} (no stderr output)`;
+}
+
+/** ANSI-stripped, whitespace-trimmed tail of `text` capped at `max` chars. */
+function tailWithoutEscapes(text: string, max: number): string {
+  const clean = (text || "").replace(ANSI_ESCAPE, "").trim();
+  return clean.length > max ? clean.slice(-max).trim() : clean;
+}
+
 /**
  * Snapshot a failed first attempt for fallback observability.
  * The fallback retry overwrites the result, so this snapshot is the only
