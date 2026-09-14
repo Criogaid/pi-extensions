@@ -1,6 +1,6 @@
 {
   "name": "@d3ara1n/pi-peek",
-  "version": "1.0.1",
+  "version": "2.0.0",
   "type": "module",
   "description": "Read-only session consult core for pi — full-context snapshots and ephemeral follow-ups via a large-context utility model.",
   "main": "src/index.ts",
