@@ -20,6 +20,7 @@ import {
   Container,
   type SelectItem,
   fuzzyFilter,
+  Input,
   Key,
   matchesKey,
   SelectList,
@@ -33,6 +34,7 @@ type CommandAction =
   | { type: "editor"; text: string }
   | { type: "native"; id: string }
   | { type: "model-select" }
+  | { type: "model"; provider: string; modelId: string }
   | { type: "compact" }
   | { type: "reload" }
   | { type: "restore" }
@@ -257,231 +259,240 @@ export function partitionedFuzzyFilter<T>(
   return [...fuzzyFilter(primary, query, getText), ...fuzzyFilter(secondary, query, getText)];
 }
 
-async function showModelSelector(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  let models: Awaited<ReturnType<typeof ctx.modelRegistry.getAvailable>>;
-  try {
-    models = await ctx.modelRegistry.getAvailable();
-  } catch {
-    ctx.ui.notify("Cannot enumerate models. Use Ctrl+L instead.", "warning");
-    return;
-  }
-
-  if (models.length === 0) {
-    ctx.ui.notify("No models available.", "warning");
-    return;
-  }
-
-  const scopedIds = new Set(ctx.scopedModels.map((s) => `${s.model.provider}/${s.model.id}`));
-
-  // Build each model's SelectItem alongside whether it's scope-pinned, then
-  // sort into two stable groups — scoped first (★), then the rest —
-  // alphabetical within each. We keep the groups as separate arrays so the
-  // search pipeline below can re-apply the same partitioning.
-  const decorated = models
-    .map((m) => {
-      const value = `${m.provider}/${m.id}`;
-      const scoped = scopedIds.has(value);
-      return {
-        scoped,
-        item: {
-          value,
-          label: scoped ? `${STAR}${m.name}` : m.name,
-          description: m.provider,
-        } satisfies SelectItem,
-      };
-    })
-    .sort((a, b) => {
-      if (a.scoped !== b.scoped) return a.scoped ? -1 : 1;
-      return a.item.label.localeCompare(b.item.label);
-    });
-
-  // Scoped models (★) stay above the rest whether browsing or filtering: each
-  // group is filtered and ranked independently, then concatenated, so a search
-  // never merges the two into one score-ordered list.
-  const scopedItems: SelectItem[] = decorated.filter((d) => d.scoped).map((d) => d.item);
-  const otherItems: SelectItem[] = decorated.filter((d) => !d.scoped).map((d) => d.item);
-  const items: SelectItem[] = [...scopedItems, ...otherItems];
-
-  const result = await ctx.ui.custom<string | null>(
-    (tui, theme, _kb, done) => {
-      const container = new Container();
-      container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-      container.addChild(new Text(theme.fg("accent", theme.bold("Switch Model")), 1, 0));
-
-      const selectList = new SelectList(items, Math.min(items.length, 12), {
-        selectedPrefix: (t: string) => theme.fg("accent", t),
-        selectedText: (t: string) => theme.fg("accent", t),
-        description: (t: string) => theme.fg("muted", t),
-        scrollInfo: (t: string) => theme.fg("dim", t),
-        noMatch: (t: string) => theme.fg("warning", t),
-      });
-
-      selectList.onSelect = (item) => done(item.value);
-      selectList.onCancel = () => done(null);
-
-      // Type-to-filter state
-      let query = "";
-      const queryText = new Text(theme.fg("accent", "> "), 1, 0);
-
-      function applyQuery() {
-        const filtered = partitionedFuzzyFilter(
-          scopedItems,
-          otherItems,
-          query,
-          (item: SelectItem) => `${item.label} ${item.description ?? ""}`,
-        );
-        // FRAGILE: SelectList has no public filter/setItems API, so we poke its
-        // private filteredItems directly. If pi-tui renames it, filtering breaks
-        // silently with no compile error.
-        (selectList as any).filteredItems = filtered;
-        selectList.setSelectedIndex(0);
-        queryText.setText(theme.fg("accent", `> ${query}▎`));
-        container.invalidate();
-        tui.requestRender();
-      }
-
-      container.addChild(queryText);
-      container.addChild(selectList);
-      container.addChild(
-        new Text(theme.fg("dim", "type to filter • ↑↓ navigate • enter select • esc cancel"), 1, 0),
-      );
-      container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-      return {
-        render(w: number) {
-          return container.render(w);
-        },
-        invalidate() {
-          container.invalidate();
-        },
-        handleInput(data: string) {
-          // Backspace → trim query
-          if (matchesKey(data, Key.backspace)) {
-            if (query.length > 0) {
-              query = query.slice(0, -1);
-              applyQuery();
-            }
-            return;
-          }
-          // Printable character → append to query
-          if (data.length === 1 && data.charCodeAt(0) >= 32) {
-            query += data;
-            applyQuery();
-            return;
-          }
-          // Navigation / confirm / cancel → pass to SelectList
-          selectList.handleInput(data);
-          tui.requestRender();
-        },
-      };
-    },
-    { overlay: true },
-  );
-
-  if (!result) return;
-
-  const parsed = parseModelRef(result);
-  if (!parsed) return;
-  const { provider, modelId } = parsed;
-  const model = ctx.modelRegistry.find(provider, modelId);
-  if (model) {
-    const success = await pi.setModel(model);
-    if (success) {
-      ctx.ui.notify(`Model: ${provider}/${modelId}`, "info");
-    } else {
-      ctx.ui.notify(`No API key for ${provider}/${modelId}`, "error");
-    }
-  }
-}
-
 // ── Command palette overlay ────────────────────────────────────────
 
+interface PalettePage {
+  title: string;
+  items: Array<PaletteItem | { type: "page"; value: string; label: string; description: string; page: PalettePage }>;
+}
+
+function pageItem(
+  value: string,
+  label: string,
+  description: string,
+  page: PalettePage,
+): PalettePage["items"][number] {
+  return { type: "page", value, label, description, page };
+}
+
 async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-  if (!ctx.hasUI) return;
+  if (ctx.mode !== "tui") return;
 
   const paletteItems = buildPaletteItems(pi);
-  const selectItems: SelectItem[] = paletteItems.map((item) => ({
-    value: item.value,
-    label: item.label,
-    description: item.description,
-  }));
+  const leaves = (category: string) =>
+    paletteItems.filter((item) => item.category === category);
+  const leafPage = (title: string, items: PaletteItem[]): PalettePage => ({ title, items });
+
+  const builtins = leaves("Built-in").filter((item) => item.action.type !== "model-select");
+  const native = leaves("Native");
+  const commands = leaves("Command");
+  const skills = leaves("Skill");
+  const templates = leaves("Template");
+  const modelPage: PalettePage = { title: "Models", items: [] };
+  const rootItems: PalettePage["items"] = [
+    pageItem("models", "Model: Switch Model", "Choose a model", modelPage),
+    ...(builtins.length ? [pageItem("builtins", "Built-in Actions", "Session and editor actions", leafPage("Built-in Actions", builtins))] : []),
+    ...(native.length ? [pageItem("native", "Extension Actions", "Actions provided by extensions", leafPage("Extension Actions", native))] : []),
+    ...(commands.length ? [pageItem("commands", "Commands", "Extension slash commands", leafPage("Commands", commands))] : []),
+    ...(skills.length ? [pageItem("skills", "Skills", "Installed skills", leafPage("Skills", skills))] : []),
+    ...(templates.length ? [pageItem("templates", "Templates", "Prompt templates", leafPage("Templates", templates))] : []),
+  ];
+  const root: PalettePage = { title: "Command Palette", items: rootItems };
 
   const result = await ctx.ui.custom<PaletteItem | null>(
     (tui, theme, _kb, done) => {
       const container = new Container();
-      container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-      container.addChild(new Text(theme.fg("accent", theme.bold("Command Palette")), 1, 0));
+      const listHost = new Container();
+      const queryInput = new Input();
+      let focused = true;
+      const stack: Array<{ page: PalettePage; input: string; selectedValue?: string }> = [
+        { page: root, input: "" },
+      ];
+      let selectList!: SelectList;
+      let visibleItems: PalettePage["items"] = [];
+      let modelLoading = false;
 
-      const selectList = new SelectList(selectItems, Math.min(selectItems.length, 15), {
+      const listTheme = {
         selectedPrefix: (t: string) => theme.fg("accent", t),
         selectedText: (t: string) => theme.fg("accent", t),
         description: (t: string) => theme.fg("muted", t),
         scrollInfo: (t: string) => theme.fg("dim", t),
         noMatch: (t: string) => theme.fg("warning", t),
-      });
-
-      selectList.onSelect = (item) => {
-        const paletteItem = paletteItems.find((p) => p.value === item.value);
-        done(paletteItem ?? null);
       };
-      selectList.onCancel = () => done(null);
 
-      // Type-to-filter state
-      let query = "";
-      const queryText = new Text(theme.fg("accent", "> "), 1, 0);
+      function current() {
+        return stack[stack.length - 1]!;
+      }
 
-      function applyQuery() {
+      function rebuild() {
+        const { page } = current();
+        const query = queryInput.getValue();
+        visibleItems =
+          page === root && query.trim()
+            ? [
+                ...root.items,
+                ...paletteItems.filter((item) => item.action.type !== "model-select"),
+              ]
+            : page.items;
+        const items = visibleItems.map((item) => ({
+          value: item.value,
+          label: item.label,
+          description:
+            page === root && query.trim() && !("page" in item)
+              ? `${item.category} › ${item.description}`
+              : item.description,
+        }));
+        const getText = (item: SelectItem) => `${item.label} ${item.description ?? ""}`;
         const filtered = query
-          ? fuzzyFilter(
-              selectItems,
-              query,
-              (item: SelectItem) => `${item.label} ${item.description ?? ""}`,
-            )
-          : selectItems;
-        // FRAGILE: see model selector — depends on SelectList.filteredItems.
-        (selectList as any).filteredItems = filtered;
-        selectList.setSelectedIndex(0);
-        queryText.setText(theme.fg("accent", `> ${query}▎`));
-        container.invalidate();
+          ? page === modelPage
+            ? partitionedFuzzyFilter(
+                items.filter((item) => item.label.startsWith(STAR)),
+                items.filter((item) => !item.label.startsWith(STAR)),
+                query,
+                getText,
+              )
+            : fuzzyFilter(items, query, getText)
+          : items;
+        selectList = new SelectList(filtered, Math.min(Math.max(filtered.length, 1), 15), listTheme);
+        const restoredIndex = filtered.findIndex(
+          (item) => item.value === current().selectedValue,
+        );
+        if (restoredIndex >= 0) selectList.setSelectedIndex(restoredIndex);
+        listHost.clear();
+        listHost.addChild(selectList);
+        selectList.onSelect = (selected) => {
+          current().selectedValue = selected.value;
+          const item = visibleItems.find((candidate) => candidate.value === selected.value);
+          if (!item) return;
+          if ("page" in item) {
+            if (item.value === "models" && !modelLoading && item.page.items.length === 0) {
+              modelLoading = true;
+              try {
+                const models = ctx.modelRegistry.getAvailable();
+                const scopedIds = new Set(
+                  ctx.scopedModels.map((s) => `${s.model.provider}/${s.model.id}`),
+                );
+                const decorated = models
+                  .map((m) => {
+                    const value = `${m.provider}/${m.id}`;
+                    const scoped = scopedIds.has(value);
+                    return {
+                      scoped,
+                      item: {
+                        value,
+                        label: scoped ? `${STAR}${m.name}` : m.name,
+                        description: m.provider,
+                        category: "Built-in",
+                        action: { type: "model", provider: m.provider, modelId: m.id } as CommandAction,
+                      },
+                    };
+                  })
+                  .sort((a, b) =>
+                    a.scoped === b.scoped
+                      ? a.item.label.localeCompare(b.item.label)
+                      : a.scoped
+                        ? -1
+                        : 1,
+                  );
+                item.page.items = decorated.map((d) => d.item);
+                modelLoading = false;
+                if (item.page.items.length === 0) {
+                  ctx.ui.notify("No models available.", "warning");
+                  return;
+                }
+                pushPage(item.page);
+              } catch {
+                modelLoading = false;
+                ctx.ui.notify("Cannot enumerate models.", "warning");
+              }
+              return;
+            }
+            pushPage(item.page);
+          } else {
+            done(item);
+          }
+        };
+        selectList.onSelectionChange = (selected) => {
+          current().selectedValue = selected.value;
+        };
+        selectList.onCancel = () => done(null);
+        if (modelLoading && page.title === "Models") {
+          listHost.clear();
+          listHost.addChild(new Text(theme.fg("muted", "Loading models…"), 1, 0));
+        }
+      }
+
+      function pushPage(page: PalettePage) {
+        current().input = queryInput.getValue();
+        stack.push({ page, input: "" });
+        queryInput.setValue("");
+        rebuild();
         tui.requestRender();
       }
 
-      container.addChild(queryText);
-      container.addChild(selectList);
-      container.addChild(
-        new Text(theme.fg("dim", "type to filter • ↑↓ navigate • enter select • esc cancel"), 1, 0),
-      );
+      function popPage() {
+        if (stack.length <= 1) return;
+        stack.pop();
+        queryInput.setValue(current().input);
+        rebuild();
+        tui.requestRender();
+      }
+
+      rebuild();
+      container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+      container.addChild(new Text(theme.fg("accent", theme.bold(root.title)), 1, 0));
+      container.addChild(queryInput);
+      container.addChild(listHost);
+      container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter open/select • backspace on empty returns • esc closes"), 1, 0));
       container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
       return {
+        get focused() {
+          return focused;
+        },
+        set focused(value: boolean) {
+          focused = value;
+          queryInput.focused = value;
+        },
         render(w: number) {
-          return container.render(w);
+          const lines = container.render(w);
+          const title = stack.map((frame) => frame.page.title).join(" › ");
+          lines[1] = theme.fg("accent", theme.bold(title));
+          return lines;
         },
         invalidate() {
           container.invalidate();
+          queryInput.invalidate();
+          selectList.invalidate();
         },
         handleInput(data: string) {
-          // Backspace → trim query
-          if (matchesKey(data, Key.backspace)) {
-            if (query.length > 0) {
-              query = query.slice(0, -1);
-              applyQuery();
+          if (matchesKey(data, Key.escape)) {
+            done(null);
+            return;
+          }
+          if (matchesKey(data, Key.backspace) && queryInput.getValue().length === 0) {
+            popPage();
+            return;
+          }
+          if (
+            matchesKey(data, Key.up) ||
+            matchesKey(data, Key.down) ||
+            matchesKey(data, Key.enter)
+          ) {
+            selectList.handleInput(data);
+          } else {
+            const before = queryInput.getValue();
+            queryInput.handleInput(data);
+            if (queryInput.getValue() !== before) {
+              current().selectedValue = undefined;
+              rebuild();
             }
-            return;
           }
-          // Printable character → append to query
-          if (data.length === 1 && data.charCodeAt(0) >= 32) {
-            query += data;
-            applyQuery();
-            return;
-          }
-          // Navigation / confirm / cancel → pass to SelectList
-          selectList.handleInput(data);
           tui.requestRender();
         },
       };
     },
-    { overlay: true },
+    { overlay: true, overlayOptions: { width: "70%", maxHeight: "80%", minWidth: 50 } },
   );
 
   if (!result) return;
@@ -503,6 +514,10 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
       }
       break;
     }
+    case "model-select": {
+      // Kept for compatibility with callers that may construct this action.
+      break;
+    }
     case "restore": {
       if (savedEditorText !== null) {
         ctx.ui.setEditorText(savedEditorText);
@@ -519,8 +534,15 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
       ctx.ui.setEditorText(action.text);
       break;
     }
-    case "model-select": {
-      await showModelSelector(pi, ctx);
+    case "model": {
+      const model = ctx.modelRegistry.find(action.provider, action.modelId);
+      if (model) {
+        const success = await pi.setModel(model);
+        ctx.ui.notify(
+          success ? `Model: ${action.provider}/${action.modelId}` : `No API key for ${action.provider}/${action.modelId}`,
+          success ? "info" : "error",
+        );
+      }
       break;
     }
     case "compact": {

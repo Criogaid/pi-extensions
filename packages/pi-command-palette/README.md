@@ -34,12 +34,17 @@ Or add to `~/.pi/agent/settings.json`:
 |----------|--------|
 | `Ctrl+Shift+P` _(default, configurable)_ | Open command palette |
 
+The palette opens as a single macOS-launcher-style overlay with nested pages. Selecting a category with **Enter** replaces the current list in the same overlay instead of opening a second overlay. Press **Backspace** with an empty search field to return to the parent page; press **Esc** to close the palette immediately.
+
 The palette lists:
 
-- **Built-in actions** — curated shortcuts for common operations (detailed below)
-- **Native commands** — entries registered by other extensions that run a callback directly (see below)
-- **Extension commands** — All registered `/command` entries
-- **Skills & Templates** — Skill commands and prompt templates
+- **Built-in Actions** — curated shortcuts for common operations (detailed below)
+- **Extension Actions** — entries registered by other extensions that run a callback directly (see below)
+- **Commands** — all registered `/command` entries
+- **Skills** — installed skill commands
+- **Templates** — prompt templates
+
+Use **↑/↓** to move through entries and **←/→** to edit the search cursor. Search is fuzzy within the current page and updates as you type; Backspace uses the normal text-editing behavior while the query is non-empty.
 
 ### Built-in actions
 
@@ -90,7 +95,7 @@ When a command replaces your editor text, or you run **Editor: Clear Content**, 
 
 ### Model selector
 
-The "Model: Switch Model" action opens a secondary overlay listing all models with configured API keys. Select one to switch instantly — no need to go through `/model` or `Ctrl+P`.
+The "Model: Switch Model" entry opens a model page inside the same overlay. Models are loaded when the page is first entered, then can be searched and selected without stacking another overlay.
 
 **Scoped models float to the top**, marked with a ★ (favorite) prefix. "Scoped" here means the same set pi uses for its built-in selector's scoped tab and `Ctrl+P` cycling — the `enabledModels` patterns in your `settings.json` (project `.pi/settings.json` overrides global `~/.pi/agent/settings.json`). Everything else follows alphabetically. Filtering preserves that boundary too — scoped matches stay above the rest while you type, rather than collapsing into one score-ordered list. If no scope is configured, the list is a plain alphabetical roster — nothing breaks.
 
