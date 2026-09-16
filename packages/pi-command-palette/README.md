@@ -34,17 +34,16 @@ Or add to `~/.pi/agent/settings.json`:
 |----------|--------|
 | `Ctrl+Shift+P` _(default, configurable)_ | Open command palette |
 
-The palette opens as a single macOS-launcher-style overlay with nested pages. Selecting a category with **Enter** replaces the current list in the same overlay instead of opening a second overlay. Press **Backspace** with an empty search field to return to the parent page; press **Esc** to close the palette immediately.
+The palette opens as a single macOS-launcher-style overlay with nested pages. The root page mixes leaves and sub-pages: built-in actions and the model selector sit directly on the root, while the remaining categories open as sub-pages — selecting one with **Enter** replaces the current list in the same overlay instead of opening a second overlay. Press **Backspace** with an empty search field to return to the parent page; press **Esc** to close the palette immediately.
 
-The palette lists:
+The root page lists:
 
-- **Built-in Actions** — curated shortcuts for common operations (detailed below)
-- **Extension Actions** — entries registered by other extensions that run a callback directly (see below)
-- **Commands** — all registered `/command` entries
-- **Skills** — installed skill commands
-- **Templates** — prompt templates
+- **Built-in actions** — curated shortcuts for common operations, shown directly on the root page so urgent entries like Restore never hide behind a sub-page (detailed below)
+- **Models** — a sub-page listing every model with a configured API key (see below)
+- **Extension Actions** — a sub-page of entries registered by other extensions that run a callback directly (see below)
+- **Commands** / **Skills** / **Templates** — sub-pages for all registered `/command` entries, installed skills, and prompt templates; entries are labeled with their bare `/name` since the breadcrumb already names the category
 
-Use **↑/↓** to move through entries and **←/→** to edit the search cursor. Search is fuzzy within the current page and updates as you type; Backspace uses the normal text-editing behavior while the query is non-empty.
+Use **↑/↓** to move through entries and **←/→** to edit the search cursor. Search is fuzzy within the current page and updates as you type; searching the root page also matches entries from every sub-page, with each match's category shown next to its description. Backspace uses the normal text-editing behavior while the query is non-empty.
 
 ### Built-in actions
 
@@ -54,7 +53,6 @@ Built-in actions are grouped by how they run:
 
 | Action | What it does |
 |--------|--------------|
-| Model: Switch Model | Open a model selector overlay; switch instantly |
 | Session: Compact | Compact the conversation right away |
 | Editor: Copy Content | Copy current editor text to the clipboard |
 | Editor: Clear Content | Clear the editor, saving the current text to the restore buffer |
@@ -95,7 +93,7 @@ When a command replaces your editor text, or you run **Editor: Clear Content**, 
 
 ### Model selector
 
-The "Model: Switch Model" entry opens a model page inside the same overlay. Models are loaded when the page is first entered, then can be searched and selected without stacking another overlay.
+The "Models" entry opens a model page inside the same overlay. Models are loaded when the page is first entered, then can be searched and selected without stacking another overlay.
 
 **Scoped models float to the top**, marked with a ★ (favorite) prefix. "Scoped" here means the same set pi uses for its built-in selector's scoped tab and `Ctrl+P` cycling — the `enabledModels` patterns in your `settings.json` (project `.pi/settings.json` overrides global `~/.pi/agent/settings.json`). Everything else follows alphabetically. Filtering preserves that boundary too — scoped matches stay above the rest while you type, rather than collapsing into one score-ordered list. If no scope is configured, the list is a plain alphabetical roster — nothing breaks.
 

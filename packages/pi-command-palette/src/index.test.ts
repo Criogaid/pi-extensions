@@ -11,7 +11,9 @@ import { paletteCommandRegistry } from "@d3ara1n/pi-command-palette-core";
 import { buildPaletteItems, partitionedFuzzyFilter } from "./index.ts";
 
 /** Minimal fake of the pi API surface buildPaletteItems uses. */
-function fakePi(commands: { name: string; description?: string }[]): ExtensionAPI {
+function fakePi(
+  commands: { name: string; description?: string; source?: "extension" | "skill" | "template" }[],
+): ExtensionAPI {
   return { getCommands: () => commands } as unknown as ExtensionAPI;
 }
 
@@ -91,7 +93,7 @@ test("buildPaletteItems orders built-ins above native commands above editor fill
   });
 
   const items = buildPaletteItems(
-    fakePi([{ name: "some-command", description: "extension command" }]),
+    fakePi([{ name: "some-command", description: "extension command", source: "extension" }]),
   );
 
   const ranks = items.map((item) =>
@@ -105,6 +107,14 @@ test("buildPaletteItems orders built-ins above native commands above editor fill
   assert.ok(native);
   assert.equal(native.label, "Peek: Ask This Session");
   assert.equal(native.action.type, "native");
+
+  // Command/skill/template labels carry no category prefix — the page
+  // breadcrumb already names the category, and root search shows it via
+  // the description decoration.
+  const cmd = items.find((item) => item.value === "cmd:some-command");
+  assert.ok(cmd);
+  assert.equal(cmd.label, "/some-command");
+  assert.equal(cmd.category, "Command");
 });
 
 test("buildPaletteItems picks up native commands registered after load", () => {

@@ -5,8 +5,9 @@
  * regardless of whether the editor has content.
  *
  * Features:
- * - Nested single-overlay pages: built-in actions, extension actions,
- *   commands, skills, and templates as sub-pages; models load on first visit
+ * - Single overlay with nested pages: built-in actions on the root page,
+ *   extension actions / commands / skills / templates as sub-pages, models
+ *   loaded on first visit
  * - Fuzzy search within the current page; searching the root page matches
  *   every leaf across sub-pages
  * - Floating overlay on top of existing content
@@ -26,6 +27,7 @@ import {
   matchesKey,
   SelectList,
   Text,
+  type TUI,
 } from "@earendil-works/pi-tui";
 import { resolveShortcutKey } from "./config.ts";
 
@@ -186,7 +188,7 @@ export function buildPaletteItems(pi: ExtensionAPI): PaletteItem[] {
 
     items.push({
       value: `cmd:${cmd.name}`,
-      label: `${sourceLabel}: /${cmd.name}`,
+      label: `/${cmd.name}`,
       description: cmd.description ?? "",
       category: sourceLabel,
       action: { type: "editor", text: editorText },
@@ -266,16 +268,25 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
   const commands = leaves("Command");
   const skills = leaves("Skill");
   const templates = leaves("Template");
+  // Leaves reachable only through sub-pages — merged into the root list
+  // while searching there. Built-in leaves live on the root page itself.
+  const subLeaves = paletteItems.filter((item) => item.category !== "Built-in");
   const modelPage: PalettePage = { title: "Models", items: [] };
   const rootItems: PalettePage["items"] = [
-    pageItem("models", "Model: Switch Model", "Choose a model", modelPage),
-    ...(builtins.length ? [pageItem("builtins", "Built-in Actions", "Session and editor actions", leafPage("Built-in Actions", builtins))] : []),
+    pageItem("models", "Models", "Switch the active model", modelPage),
+    // Built-in actions sit directly on the root page so urgent entries like
+    // Restore are visible without descending into a sub-page.
+    ...builtins,
     ...(native.length ? [pageItem("native", "Extension Actions", "Actions provided by extensions", leafPage("Extension Actions", native))] : []),
     ...(commands.length ? [pageItem("commands", "Commands", "Extension slash commands", leafPage("Commands", commands))] : []),
     ...(skills.length ? [pageItem("skills", "Skills", "Installed skills", leafPage("Skills", skills))] : []),
     ...(templates.length ? [pageItem("templates", "Templates", "Prompt templates", leafPage("Templates", templates))] : []),
   ];
   const root: PalettePage = { title: "Command Palette", items: rootItems };
+
+  // Captured from the overlay factory so palette actions can request a
+  // render after mutating editor state (see the action switch below).
+  let tuiRef: TUI | undefined;
 
   /** Scoped-model marker prefix (★). */
   const STAR = "★ ";
@@ -309,6 +320,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
 
   const result = await ctx.ui.custom<PaletteItem | null>(
     (tui, theme, _kb, done) => {
+      tuiRef = tui;
       const container = new Container();
       const listHost = new Container();
       const queryInput = new Input();
@@ -335,9 +347,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
         const { page } = current();
         const query = queryInput.getValue();
         visibleItems =
-          page === root && query.trim()
-            ? [...root.items, ...paletteItems]
-            : page.items;
+          page === root && query.trim() ? [...root.items, ...subLeaves] : page.items;
         const items = visibleItems.map((item) => ({
           value: item.value,
           label: item.label,
@@ -561,6 +571,11 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
       break;
     }
   }
+
+  // The overlay close renders the underlying UI before this promise
+  // resolves, and setEditorText mutates state without requesting a render —
+  // without this, the editor shows stale text until the next keypress.
+  tuiRef?.requestRender();
 }
 
 // ── Extension entry point ──────────────────────────────────────────
