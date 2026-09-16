@@ -44,7 +44,7 @@ import { startSubagentRun, type RunHandle } from "./run.ts";
 import { buildInboxReminder, injectReminder } from "./reminder.ts";
 import { serializeInheritedConversation } from "./inheritance.ts";
 import { renderDelegateCall, renderDelegateResult } from "./render.ts";
-import { createViewPanel } from "./view.ts";
+import { createViewPanel, unionViewRuns } from "./view.ts";
 import {
   createSteerCallRender,
   renderBackgroundDelegateCall,
@@ -103,14 +103,21 @@ export default function subagentExtension(pi: ExtensionAPI) {
 
   // ── Background run registry ────────────────────────────────────
   // Process-lifetime map of background runs (queued, running, and
-  // finished/failed alike). Foreground delegate runs are NOT registered —
-  // their lifecycle is the tool call itself. Runs stay registered for the
-  // whole session: subagent_check is idempotent and re-delivers the terminal
-  // snapshot on every call, so branch navigation or compaction can never
-  // strand a result outside the model's reach. Whether a run still needs
-  // reminding is NOT tracked here — it derives from the session tree (see
+  // finished/failed alike). Foreground delegate runs are NOT registered
+  // here — their lifecycle is the tool call itself (the view-only archive
+  // below holds those). Runs stay registered for the whole session:
+  // subagent_check is idempotent and re-delivers the terminal snapshot on
+  // every call, so branch navigation or compaction can never strand a
+  // result outside the model's reach. Whether a run still needs reminding
+  // is NOT tracked here — it derives from the session tree (see
   // collectDeliveredIds + the context handler), the single source of truth.
   const backgroundRuns = new Map<string, RunHandle>();
+  // View-only archive of foreground runs — same append-for-the-whole-session
+  // lifetime as the registry above, so every delegated run stays browsable
+  // in /subagent:view after its blocking call returns. Foreground runs never
+  // enter backgroundRuns: check/wait/cancel/list operate on background runs
+  // only, and the foreground tool call itself owns delivery.
+  const foregroundRuns = new Set<RunHandle>();
   let runCounter = 0;
   let sessionGeneration = 0;
 
@@ -455,7 +462,10 @@ export default function subagentExtension(pi: ExtensionAPI) {
         };
       }
 
-      // ── Foreground: the same async engine, blocked on here. ──
+      // ── Foreground: the same async engine, blocked on here. Archived
+      // for the view at creation — like a background run, it stays
+      // browsable after the call returns. ──
+      foregroundRuns.add(run);
       const emit = (results: SubagentResult[], text: string) => {
         onUpdate?.({
           content: [{ type: "text", text }],
@@ -813,23 +823,11 @@ export default function subagentExtension(pi: ExtensionAPI) {
   // Shared by the /subagent:view command and the native command-palette
   // entry — both open the same overlay.
   //
-  // Union of every known run: the background registry — append-only for
-  // the whole session, the view doubles as the run archive and derives
-  // nothing from delivery state — plus live in-flight runs (foreground
-  // delegate calls included, visible only while in flight). Dedupe by
-  // id — background runs appear in both.
+  // The view lists every run ever delegated this session — background and
+  // foreground alike — from the two append-only registries. It derives
+  // nothing from delivery state; a run never leaves the archive.
   async function openSubagentView(ctx: ExtensionContext): Promise<void> {
-    const runsProvider = () => {
-      const seen = new Set<string>();
-      const out: RunHandle[] = [];
-      for (const r of [...backgroundRuns.values(), ...liveRuns]) {
-        if (!seen.has(r.id)) {
-          seen.add(r.id);
-          out.push(r);
-        }
-      }
-      return out;
-    };
+    const runsProvider = () => unionViewRuns(backgroundRuns.values(), foregroundRuns);
     await ctx.ui.custom(
       (tui, theme, _keybindings, done) =>
         createViewPanel(runsProvider, tui, theme, () => done(undefined)),

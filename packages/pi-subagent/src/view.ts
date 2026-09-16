@@ -26,10 +26,11 @@
  *    the focused run forward, Shift+Tab backward, and cycling resets its
  *    view — page back to activity, scrolls re-pinned.
  *
- * The run list is the session's archive: every background run stays listed
- * (newest first) after it settles — results remain browsable even after the
- * model collects them, so nothing is ever derived from delivery state here.
- * Foreground runs appear only while their delegate call is in flight.
+ * The run list is the session's archive: every run — background and
+ * foreground alike — stays listed (newest first) after it settles. Results
+ * remain browsable even after the model collects them or the blocking
+ * delegate call returns, so nothing is ever derived from delivery state
+ * here; a run never leaves the archive.
  *
  * Layout: a centered screen overlay (overlay:true) occupying most of the
  * terminal, framed with a thin border. An embedded Editor accepts steering
@@ -113,6 +114,29 @@ function capBriefText(text: string): string {
   const tail = text.slice(-Math.floor(BRIEF_TEXT_CAP * 0.2));
   const elided = text.length - head.length - tail.length;
   return `${head}\n… [${formatTokens(elided)} chars elided] …\n${tail}`;
+}
+
+/**
+ * The view's run list: the background registry unioned with the foreground
+ * archive — both append-only for the whole session, a run registered at
+ * creation never leaves. Dedupe by id is defensive; the two sources are
+ * disjoint by construction (a run is either background or foreground).
+ *
+ * @internal — exported for testing; the panel gets this via runsProvider.
+ */
+export function unionViewRuns(
+  background: Iterable<RunHandle>,
+  foreground: Iterable<RunHandle>,
+): RunHandle[] {
+  const seen = new Set<string>();
+  const out: RunHandle[] = [];
+  for (const run of [...background, ...foreground]) {
+    if (!seen.has(run.id)) {
+      seen.add(run.id);
+      out.push(run);
+    }
+  }
+  return out;
 }
 
 /**
@@ -240,10 +264,10 @@ export class SubagentViewPanel implements Component, Focusable {
     }, ANIMATION_INTERVAL_MS);
   }
 
-  /** Resolve the focused run by id; stable across list changes (a
-   *  foreground run settling drops out of the registry). The focused run's
-   *  view state (page + scrolls) resets only when the focused run actually
-   *  changes. */
+  /** Resolve the focused run by id. The archive is append-only, so the
+   *  focused run never drops out; the newest-run fallback is defensive.
+   *  The focused run's view state (page + scrolls) resets only when the
+   *  focused run actually changes. */
   private focusedRun(): RunHandle | undefined {
     const runs = sortViewRuns(this.runsProvider());
     if (runs.length === 0) {
@@ -272,8 +296,9 @@ export class SubagentViewPanel implements Component, Focusable {
     if (runs.length < 2) return;
     const idx = runs.findIndex((r) => r.id === this.focusId);
     if (idx < 0) {
-      // Focus id gone from the list (a foreground run settled): fall back
-      // to the newest run, same as focusedRun().
+      // Focus id gone from the list (defensive — the archive is
+      // append-only, runs never leave): fall back to the newest run,
+      // same as focusedRun().
       const run = runs[0];
       if (run.id === this.focusId) return;
       this.focusId = run.id;
@@ -549,10 +574,10 @@ export class SubagentViewPanel implements Component, Focusable {
       if (win.rightClipped) parts.push(fg("dim", "…"));
       lines.push(row(header + parts.join(th.fg("dim", " "))));
     } else {
-      // Empty registry — nothing was delegated this session and no
-      // foreground run is in flight. Give the state real presence — a
-      // full-size panel with a centered message and the close hint — and
-      // fold steer mode back to browse so Esc closes immediately.
+      // Empty archive — nothing was delegated this session. Give the
+      // state real presence — a full-size panel with a centered message
+      // and the close hint — and fold steer mode back to browse so Esc
+      // closes immediately.
       if (this.mode === "steer") {
         this.editor.setText("");
         this.mode = "browse";

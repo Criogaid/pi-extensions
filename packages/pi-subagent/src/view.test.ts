@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert";
-import { inheritedConversationFields, sortViewRuns, windowTabCells } from "./view.ts";
+import { inheritedConversationFields, sortViewRuns, unionViewRuns, windowTabCells } from "./view.ts";
 import type { RunHandle } from "./run.ts";
 
 // ── Fakes ──────────────────────────────────────────────────────────
@@ -54,6 +54,34 @@ test("sortViewRuns is state-agnostic — a run settling never reshuffles rows", 
     after.map((r) => r.id),
     before.map((r) => r.id),
   );
+});
+
+// ── unionViewRuns ─────────────────────────────────────────────────
+
+test("unionViewRuns merges the background registry and the foreground archive", () => {
+  const out = unionViewRuns(
+    [fakeHandle("sub-1", "running"), fakeHandle("sub-2", "finished")],
+    [fakeHandle("sub-3", "finished")],
+  );
+  assert.deepEqual(
+    out.map((r) => r.id).sort(),
+    ["sub-1", "sub-2", "sub-3"],
+  );
+});
+
+test("unionViewRuns keeps a settled foreground run listed without any live set", () => {
+  // Regression: a finished foreground delegate run must stay in the view's
+  // archive after the blocking call returned — nothing else feeds the panel.
+  const out = unionViewRuns([], [fakeHandle("sub-1", "finished")]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].id, "sub-1");
+  assert.equal(out[0].state, "finished");
+});
+
+test("unionViewRuns dedupes by id and returns empty for empty inputs", () => {
+  const run = fakeHandle("sub-1", "finished");
+  assert.deepEqual(unionViewRuns([run], [run]), [run]);
+  assert.deepEqual(unionViewRuns([], []), []);
 });
 
 // ── windowTabCells ─────────────────────────────────────────────────
