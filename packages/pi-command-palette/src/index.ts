@@ -5,9 +5,10 @@
  * regardless of whether the editor has content.
  *
  * Features:
- * - Lists extension commands, skills, and prompt templates (from pi.getCommands())
- * - Built-in actions: model selector, new session, compact, reload
- * - Fuzzy search via SelectList
+ * - Nested single-overlay pages: built-in actions, extension actions,
+ *   commands, skills, and templates as sub-pages; models load on first visit
+ * - Fuzzy search within the current page; searching the root page matches
+ *   every leaf across sub-pages
  * - Floating overlay on top of existing content
  * - Saves editor text before overwriting; offers "Restore" in palette
  * - Clear editor into the restore buffer
@@ -33,7 +34,6 @@ import { resolveShortcutKey } from "./config.ts";
 type CommandAction =
   | { type: "editor"; text: string }
   | { type: "native"; id: string }
-  | { type: "model-select" }
   | { type: "model"; provider: string; modelId: string }
   | { type: "compact" }
   | { type: "reload" }
@@ -60,10 +60,9 @@ let savedEditorText: string | null = null;
  * non-built-in entries always sort after built-ins.
  */
 const BUILTIN_ORDER: Record<string, number> = {
-  __model_select: 0,
-  __restore: 1,
-  __copy_editor: 2,
-  __clear_editor: 3,
+  __restore: 0,
+  __copy_editor: 1,
+  __clear_editor: 2,
 };
 
 // ── Helpers ────────────────────────────────────────────────────────
@@ -100,14 +99,6 @@ export function buildPaletteItems(pi: ExtensionAPI): PaletteItem[] {
   }
 
   // ── Built-in actions ──────────────────────────────────────────
-  items.push({
-    value: "__model_select",
-    label: "Model: Switch Model",
-    description: "Select a model from the registry",
-    category: "Built-in",
-    action: { type: "model-select" },
-  });
-
   items.push({
     value: "__new_session",
     label: "Session: New",
@@ -219,22 +210,6 @@ export function buildPaletteItems(pi: ExtensionAPI): PaletteItem[] {
   return items;
 }
 
-// ── Model selector ─────────────────────────────────────────────────
-
-const STAR = "★ ";
-
-/**
- * @internal — exported for testing; parses the selector's `provider/model-id` values.
- */
-export function parseModelRef(modelRef: string): { provider: string; modelId: string } | undefined {
-  const slash = modelRef.indexOf("/");
-  if (slash === -1) return undefined;
-  return {
-    provider: modelRef.slice(0, slash),
-    modelId: modelRef.slice(slash + 1),
-  };
-}
-
 // ── Partitioned fuzzy filter ───────────────────────────────────────
 
 /**
@@ -261,17 +236,20 @@ export function partitionedFuzzyFilter<T>(
 
 // ── Command palette overlay ────────────────────────────────────────
 
-interface PalettePage {
-  title: string;
-  items: Array<PaletteItem | { type: "page"; value: string; label: string; description: string; page: PalettePage }>;
+interface PageEntry {
+  type: "page";
+  value: string;
+  label: string;
+  description: string;
+  page: PalettePage;
 }
 
-function pageItem(
-  value: string,
-  label: string,
-  description: string,
-  page: PalettePage,
-): PalettePage["items"][number] {
+interface PalettePage {
+  title: string;
+  items: Array<PaletteItem | PageEntry>;
+}
+
+function pageItem(value: string, label: string, description: string, page: PalettePage): PageEntry {
   return { type: "page", value, label, description, page };
 }
 
@@ -283,7 +261,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
     paletteItems.filter((item) => item.category === category);
   const leafPage = (title: string, items: PaletteItem[]): PalettePage => ({ title, items });
 
-  const builtins = leaves("Built-in").filter((item) => item.action.type !== "model-select");
+  const builtins = leaves("Built-in");
   const native = leaves("Native");
   const commands = leaves("Command");
   const skills = leaves("Skill");
@@ -299,6 +277,36 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
   ];
   const root: PalettePage = { title: "Command Palette", items: rootItems };
 
+  /** Scoped-model marker prefix (★). */
+  const STAR = "★ ";
+
+  /**
+   * Build the model list for the Models page: scoped models (★) first, then
+   * the rest — alphabetical within each group. Reads the registry
+   * synchronously; throws if enumeration fails.
+   */
+  function buildModelItems(): PaletteItem[] {
+    const scopedIds = new Set(ctx.scopedModels.map((s) => `${s.model.provider}/${s.model.id}`));
+    return ctx.modelRegistry
+      .getAvailable()
+      .map((m): PaletteItem => {
+        const scoped = scopedIds.has(`${m.provider}/${m.id}`);
+        return {
+          value: `${m.provider}/${m.id}`,
+          label: scoped ? `${STAR}${m.name}` : m.name,
+          description: m.provider,
+          category: "Models",
+          action: { type: "model", provider: m.provider, modelId: m.id },
+        };
+      })
+      .sort((a, b) => {
+        const aScoped = scopedIds.has(a.value);
+        const bScoped = scopedIds.has(b.value);
+        if (aScoped !== bScoped) return aScoped ? -1 : 1;
+        return a.label.localeCompare(b.label);
+      });
+  }
+
   const result = await ctx.ui.custom<PaletteItem | null>(
     (tui, theme, _kb, done) => {
       const container = new Container();
@@ -309,8 +317,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
         { page: root, input: "" },
       ];
       let selectList!: SelectList;
-      let visibleItems: PalettePage["items"] = [];
-      let modelLoading = false;
+      let visibleItems: Array<PaletteItem | PageEntry> = [];
 
       const listTheme = {
         selectedPrefix: (t: string) => theme.fg("accent", t),
@@ -329,10 +336,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
         const query = queryInput.getValue();
         visibleItems =
           page === root && query.trim()
-            ? [
-                ...root.items,
-                ...paletteItems.filter((item) => item.action.type !== "model-select"),
-              ]
+            ? [...root.items, ...paletteItems]
             : page.items;
         const items = visibleItems.map((item) => ({
           value: item.value,
@@ -364,68 +368,45 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
           current().selectedValue = selected.value;
           const item = visibleItems.find((candidate) => candidate.value === selected.value);
           if (!item) return;
-          if ("page" in item) {
-            if (item.value === "models" && !modelLoading && item.page.items.length === 0) {
-              modelLoading = true;
-              try {
-                const models = ctx.modelRegistry.getAvailable();
-                const scopedIds = new Set(
-                  ctx.scopedModels.map((s) => `${s.model.provider}/${s.model.id}`),
-                );
-                const decorated = models
-                  .map((m) => {
-                    const value = `${m.provider}/${m.id}`;
-                    const scoped = scopedIds.has(value);
-                    return {
-                      scoped,
-                      item: {
-                        value,
-                        label: scoped ? `${STAR}${m.name}` : m.name,
-                        description: m.provider,
-                        category: "Built-in",
-                        action: { type: "model", provider: m.provider, modelId: m.id } as CommandAction,
-                      },
-                    };
-                  })
-                  .sort((a, b) =>
-                    a.scoped === b.scoped
-                      ? a.item.label.localeCompare(b.item.label)
-                      : a.scoped
-                        ? -1
-                        : 1,
-                  );
-                item.page.items = decorated.map((d) => d.item);
-                modelLoading = false;
-                if (item.page.items.length === 0) {
-                  ctx.ui.notify("No models available.", "warning");
-                  return;
-                }
-                pushPage(item.page);
-              } catch {
-                modelLoading = false;
-                ctx.ui.notify("Cannot enumerate models.", "warning");
-              }
+          if (!("page" in item)) {
+            done(item);
+            return;
+          }
+          // Entering the Models page loads the registry once per palette
+          // session; later visits reuse the cached list.
+          if (item.page === modelPage && item.page.items.length === 0) {
+            try {
+              item.page.items = buildModelItems();
+            } catch {
+              ctx.ui.notify("Cannot enumerate models. Use Ctrl+L instead.", "warning");
               return;
             }
-            pushPage(item.page);
-          } else {
-            done(item);
+            if (item.page.items.length === 0) {
+              ctx.ui.notify("No models available.", "warning");
+              return;
+            }
           }
+          pushPage(item.page);
         };
         selectList.onSelectionChange = (selected) => {
           current().selectedValue = selected.value;
         };
-        selectList.onCancel = () => done(null);
-        if (modelLoading && page.title === "Models") {
-          listHost.clear();
-          listHost.addChild(new Text(theme.fg("muted", "Loading models…"), 1, 0));
-        }
+      }
+
+      // Breadcrumb title: updated in place whenever the page stack changes.
+      const titleText = new Text(theme.fg("accent", theme.bold(root.title)), 1, 0);
+
+      function updateTitle() {
+        titleText.setText(
+          theme.fg("accent", theme.bold(stack.map((frame) => frame.page.title).join(" › "))),
+        );
       }
 
       function pushPage(page: PalettePage) {
         current().input = queryInput.getValue();
         stack.push({ page, input: "" });
         queryInput.setValue("");
+        updateTitle();
         rebuild();
         tui.requestRender();
       }
@@ -434,16 +415,19 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
         if (stack.length <= 1) return;
         stack.pop();
         queryInput.setValue(current().input);
+        updateTitle();
         rebuild();
         tui.requestRender();
       }
 
       rebuild();
       container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-      container.addChild(new Text(theme.fg("accent", theme.bold(root.title)), 1, 0));
+      container.addChild(titleText);
       container.addChild(queryInput);
       container.addChild(listHost);
-      container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter open/select • backspace on empty returns • esc closes"), 1, 0));
+      container.addChild(
+        new Text(theme.fg("dim", "↑↓ navigate • enter open/select • backspace go back • esc close"), 1, 0),
+      );
       container.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
 
       return {
@@ -455,10 +439,7 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
           queryInput.focused = value;
         },
         render(w: number) {
-          const lines = container.render(w);
-          const title = stack.map((frame) => frame.page.title).join(" › ");
-          lines[1] = theme.fg("accent", theme.bold(title));
-          return lines;
+          return container.render(w);
         },
         invalidate() {
           container.invalidate();
@@ -512,10 +493,6 @@ async function showCommandPalette(pi: ExtensionAPI, ctx: ExtensionContext): Prom
         const message = err instanceof Error ? err.message : String(err);
         ctx.ui.notify(`Palette command "${cmd.label}" failed: ${message}`, "error");
       }
-      break;
-    }
-    case "model-select": {
-      // Kept for compatibility with callers that may construct this action.
       break;
     }
     case "restore": {

@@ -1,36 +1,19 @@
 /**
- * Regression tests for model reference parsing, the partitioned fuzzy
- * filter that keeps scoped models on top while searching, and the palette
- * item ordering that keeps built-ins → native commands → editor-fill entries.
+ * Regression tests for the partitioned fuzzy filter that keeps scoped
+ * models on top while searching, and the palette item ordering that keeps
+ * built-ins → native commands → editor-fill entries.
  */
 
 import assert from "node:assert/strict";
 import { after, test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { paletteCommandRegistry } from "@d3ara1n/pi-command-palette-core";
-import { buildPaletteItems, parseModelRef, partitionedFuzzyFilter } from "./index.ts";
+import { buildPaletteItems, partitionedFuzzyFilter } from "./index.ts";
 
 /** Minimal fake of the pi API surface buildPaletteItems uses. */
 function fakePi(commands: { name: string; description?: string }[]): ExtensionAPI {
   return { getCommands: () => commands } as unknown as ExtensionAPI;
 }
-
-test("parseModelRef splits provider and model at the first slash", () => {
-  assert.deepEqual(parseModelRef("anthropic/claude-sonnet"), {
-    provider: "anthropic",
-    modelId: "claude-sonnet",
-  });
-  assert.deepEqual(parseModelRef("openrouter/vendor/model/with/slashes"), {
-    provider: "openrouter",
-    modelId: "vendor/model/with/slashes",
-  });
-});
-
-test("parseModelRef preserves empty provider or model segments", () => {
-  assert.equal(parseModelRef("model-without-provider"), undefined);
-  assert.deepEqual(parseModelRef("/model"), { provider: "", modelId: "model" });
-  assert.deepEqual(parseModelRef("provider/"), { provider: "provider", modelId: "" });
-});
 
 // ── partitionedFuzzyFilter ─────────────────────────────────────────
 
