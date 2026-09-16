@@ -886,8 +886,10 @@ export default function subagentExtension(pi: ExtensionAPI) {
           try {
             const resolved = await api.resolveRoleAsync(role.role);
             if (resolved.model) {
+              // Show the role's configured thinking level, e.g. provider/model:high.
+              const thinking = resolved.config.thinking ? `:${resolved.config.thinking}` : "";
               lines.push(
-                `[\u2713] role ${name}: \u2192 ${resolved.model.provider}/${resolved.model.id}`,
+                `[\u2713] role ${name}: \u2192 ${resolved.model.provider}/${resolved.model.id}${thinking}`,
               );
             } else {
               lines.push(`[\u2717] role ${name}: model not resolved (role config: ${role.role})`);
