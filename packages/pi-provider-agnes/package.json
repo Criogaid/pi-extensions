@@ -3,6 +3,10 @@
   "version": "1.2.0",
   "type": "module",
   "description": "Agnes AI provider for pi — registers agnes (token billing) and agnes-plan (subscription) providers with text and image input models",
+  "homepage": "https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-provider-agnes#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
   "keywords": [
     "pi-package",
     "pi",

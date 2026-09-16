@@ -3,6 +3,10 @@
   "version": "0.7.0",
   "type": "module",
   "description": "Global command palette for pi — press Ctrl+Shift+P to search and run commands from anywhere",
+  "homepage": "https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-command-palette#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
   "main": "src/index.ts",
   "dependencies": {
     "@d3ara1n/pi-command-palette-core": "*"

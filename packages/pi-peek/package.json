@@ -3,6 +3,10 @@
   "version": "2.0.0",
   "type": "module",
   "description": "Read-only session consult core for pi — full-context snapshots and ephemeral follow-ups via a large-context utility model.",
+  "homepage": "https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-peek#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
   "main": "src/index.ts",
   "types": "src/types.ts",
   "keywords": [

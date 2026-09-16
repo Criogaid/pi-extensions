@@ -3,6 +3,10 @@
   "version": "0.5.2",
   "type": "module",
   "description": "Cross-instance peek for pi — built on @d3ara1n/pi-mesh. Registers an 'ask' handler that answers remote peeks via @d3ara1n/pi-peek's read-after-burn consult, plus the `peek` LLM tool. Discovery, transport, and identity live in pi-mesh.",
+  "homepage": "https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-peek-agent#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
   "main": "src/index.ts",
   "keywords": [
     "pi-package",

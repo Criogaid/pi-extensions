@@ -3,6 +3,10 @@
   "version": "1.1.1",
   "type": "module",
   "description": "Model role configuration library for pi extensions — defines named model roles and resolves them to Model instances",
+  "homepage": "https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-model-roles#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
   "main": "src/index.ts",
   "types": "src/types.ts",
   "keywords": [

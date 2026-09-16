@@ -1,5 +1,13 @@
 {
   "name": "pi-extensions-monorepo",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/d3ara1n/pi-extensions"
+  },
+  "homepage": "https://github.com/d3ara1n/pi-extensions#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
   "type": "module",
   "private": true,
   "workspaces": [

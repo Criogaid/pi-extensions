@@ -3,6 +3,10 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Shared types and singleton registry for pi-command-palette — let any extension register native palette entries with direct callbacks",
+  "homepage": "https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-command-palette-core#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
   "main": "src/index.ts",
   "types": "src/index.ts",
   "peerDependencies": {

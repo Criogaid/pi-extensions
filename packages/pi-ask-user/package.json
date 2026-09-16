@@ -3,6 +3,10 @@
   "version": "2.5.0",
   "type": "module",
   "description": "Ask-user tool for pi — renders in the bottom editor slot (not a screen overlay), so the transcript stays visible and scrollable above the panel while you decide",
+  "homepage": "https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-ask-user#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
   "main": "src/index.ts",
   "keywords": [
     "pi-package",
