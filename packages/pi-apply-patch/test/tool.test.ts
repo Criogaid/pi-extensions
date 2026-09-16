@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { makeApplyPatchTool } from "../src/tool.ts";
 import type { Text } from "@earendil-works/pi-tui";
+import { renderRejection } from "../src/report.ts";
 import {
   countPatchFiles,
   makeDetails,
@@ -129,6 +130,51 @@ test("large result previews are bounded while details retain the full diff", () 
   assert.match(output, /more diff lines/);
   assert.equal(details.files[0].added, 200);
   assert.ok(output.split("\n").length < 130);
+});
+
+test("details carry hunk matches, overwrite, and rematch annotations", () => {
+  const details = makeDetails([
+    {
+      kind: "add",
+      path: "dup",
+      before: "x\n",
+      after: "y\n",
+      overwrites: true,
+      hunks: [{ hunk: 1, line: 1, strategy: "exact", occurrences: 2 }],
+    },
+    { kind: "update", path: "u", before: "a\n", after: "b\n", rematched: true },
+  ]);
+  const round = JSON.parse(JSON.stringify(details));
+  assert.equal(round.files[0].overwrites, true);
+  assert.deepEqual(round.files[0].hunks, [{ hunk: 1, line: 1, strategy: "exact", occurrences: 2 }]);
+  assert.equal(round.files[1].rematched, true);
+  const output = renderPatchResult(details, "", true, false, theme).render(120).join("\n");
+  assert.match(output, /overwrote an existing file/);
+  assert.match(output, /rematched/);
+  assert.match(output, /first of 2 occurrences/);
+});
+
+test("rejection reports bound echoed context and listed hunks", () => {
+  const pattern = Array.from({ length: 20 }, (_, index) => `line ${index}`);
+  const failed = (hunk: number) => ({
+    status: "unmatched" as const,
+    hunk,
+    failure: { pattern, searchFrom: 1, endOfFile: false, candidates: [] },
+  });
+  const message = renderRejection({
+    rejected: [
+      {
+        path: "big",
+        kind: "update" as const,
+        reason: "unmatched",
+        outcomes: Array.from({ length: 8 }, (_, index) => failed(index + 1)),
+      },
+    ],
+    verified: [],
+  });
+  assert.match(message, /… 14 of 20 lines omitted/);
+  assert.equal(message.includes("| line 10"), false);
+  assert.match(message, /… 2 more failed hunks/);
 });
 
 test("Responses protocol supports freeform, fallback, streaming escapes, and paired history", async () => {

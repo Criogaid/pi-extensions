@@ -71,7 +71,21 @@ The extension performs these checks itself and does not integrate with a separat
 
 All operations are parsed, paths are checked, and file changes are verified before the first write. Participating files share pi's mutation queues, acquired in a consistent order. Paths are rechecked after waiting and before mutations. For nonexistent targets beneath directory symlinks, pi's built-in tools can use a different queue key; concurrent creation through those aliases is not guaranteed to serialize across tools. If an earlier move changes a later source, the later update is matched against that source's current content.
 
-A verification failure leaves files untouched. A failure during execution can leave partial changes; errors report completed operations and identify the current target to inspect before retrying. Cancellation is checked between preparation and execution steps. An in-progress filesystem write is allowed to finish; there is no rollback.
+A verification failure leaves files untouched. A failure during execution can leave partial changes; errors report completed operations, list the operations that were not applied, and identify the current target to inspect before retrying. Cancellation is checked between preparation and execution steps. An in-progress filesystem write is allowed to finish; there is no rollback.
+
+## Failure diagnostics
+
+When context matching fails, the error lists every unmatched hunk across every file — not just the first failure — so one round trip is enough to fix the whole patch. Each failed hunk reports:
+
+- the hunk number and the line its forward search started from;
+- a bounded echo of the expected context lines (long contexts show first and last lines only);
+- the closest matching window in the file, classified as whitespace-only drift or content differences;
+- an exact match that lies outside the searched range (earlier in the file, or before an `*** End of File` anchor) — usually a chunk-ordering mistake;
+- whether the hunk's replacement text already occurs in the file, meaning the hunk was likely applied before.
+
+Successful results carry per-hunk match details in `details`: the matched line, which comparison produced the match (exact, trailing-whitespace, whitespace, or Unicode normalization), and how many times the context occurs in the file — matching picks the first occurrence. Adds and moves that overwrite existing destinations are flagged, and a source that changed between verification and the write is rematched against its live content with a note. Candidate scans are budgeted and skipped for very large files.
+
+Approximate candidates are diagnostics only: the tool never applies a fuzzy match, picks between multiple candidates, or rewrites the patch on its own.
 
 Successful results use the Codex summary format:
 

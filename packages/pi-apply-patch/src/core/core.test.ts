@@ -1,14 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { countOccurrences, findAlreadyApplied, findCandidates } from "./diagnostics.ts";
 import { parsePatch } from "./parser.ts";
 import { seekSequence } from "./matcher.ts";
-import { applyUpdate } from "./update.ts";
+import { applyUpdate, planUpdate } from "./update.ts";
 
 function update(source: string, body: string): string {
   const operation = parsePatch(`*** Begin Patch\n*** Update File: file.txt\n${body}\n*** End Patch`)
     .operations[0];
   assert.equal(operation.kind, "update");
   return applyUpdate(source, operation.chunks, "file.txt");
+}
+
+function chunks(body: string) {
+  const operation = parsePatch(
+    `*** Begin Patch\n*** Update File: file.txt\n${body}\n*** End Patch`,
+  ).operations[0];
+  assert.equal(operation.kind, "update");
+  return operation.chunks;
 }
 
 test("parses mixed operations, literal quoted paths, moves, and multiple chunks", () => {
@@ -126,4 +135,57 @@ test("handles additions beyond JavaScript function argument limits", () => {
   const count = 150_000;
   const output = update("", `@@\n${Array(count).fill("+x").join("\n")}`);
   assert.equal(output, "x\n".repeat(count));
+});
+
+test("planUpdate collects every unmatched hunk and keeps matching later chunks", () => {
+  const plan = planUpdate("gone\nkeep\n", chunks("@@\n-missing\n+X\n@@\n-keep\n+KEPT"));
+  assert.deepEqual(
+    plan.outcomes.map((outcome) => outcome.status),
+    ["unmatched", "matched"],
+  );
+  const matched = plan.outcomes[1];
+  assert.equal(matched.status === "matched" && matched.line, 2);
+  const failure = plan.outcomes[0];
+  assert.equal(failure.status === "unmatched" && failure.failure.searchFrom, 1);
+  assert.deepEqual(failure.status === "unmatched" && failure.failure.pattern, ["missing"]);
+});
+
+test("planUpdate reports match strategy, line, and occurrence counts", () => {
+  const repeated = planUpdate("x\nx\n", chunks("@@\n-x\n+y"));
+  assert.deepEqual(repeated.outcomes, [
+    { status: "matched", hunk: 1, line: 1, strategy: "exact", occurrences: 2 },
+  ]);
+  const trailing = planUpdate("x  \n", chunks("@@\n-x\n+y"));
+  assert.deepEqual(trailing.outcomes, [
+    { status: "matched", hunk: 1, line: 1, strategy: "trim_end", occurrences: 1 },
+  ]);
+});
+
+test("candidate search classifies whitespace and content drift", () => {
+  assert.deepEqual(findCandidates(["const  total = a;"], ["const total = a;"], 0), [
+    { line: 1, differing: 1, whitespace: 1, difference: "whitespace", beforeSearchStart: false },
+  ]);
+  assert.deepEqual(findCandidates(["keep", "other"], ["keep", "changed"], 0), [
+    { line: 1, differing: 1, whitespace: 0, difference: "content", beforeSearchStart: false },
+  ]);
+  assert.deepEqual(findCandidates(["unrelated"], ["entirely different"], 0), []);
+});
+
+test("candidate search flags exact matches outside the searched range", () => {
+  assert.deepEqual(findCandidates(["x", "y"], ["x"], 1), [
+    { line: 1, differing: 0, whitespace: 0, difference: "exact", beforeSearchStart: true },
+  ]);
+});
+
+test("already-applied detection ignores no-op replacements", () => {
+  assert.equal(findAlreadyApplied(["a", "b"], ["b"], ["a"], 0, false), 2);
+  assert.equal(findAlreadyApplied(["a"], ["a"], ["a"], 0, false), undefined);
+  assert.equal(findAlreadyApplied(["a"], [], ["a"], 0, false), undefined);
+});
+
+test("oversized scans are skipped instead of searched", () => {
+  const lines = Array.from({ length: 250_000 }, (_, index) => `line ${index}`);
+  const pattern = Array.from({ length: 10 }, (_, index) => `other ${index}`);
+  assert.deepEqual(findCandidates(lines, pattern, 0), []);
+  assert.equal(countOccurrences(lines, pattern, 0), 1);
 });

@@ -1,6 +1,7 @@
 import { generateDiffString, type Theme } from "@earendil-works/pi-coding-agent";
 import { stripTerminalSequences, Text } from "@earendil-works/pi-tui";
 import type { FileChange } from "./apply.ts";
+import type { HunkMatchInfo } from "./core/types.ts";
 
 export interface FileDetails {
   readonly kind: FileChange["kind"];
@@ -9,6 +10,11 @@ export interface FileDetails {
   readonly added?: number;
   readonly removed?: number;
   readonly diff?: string;
+  readonly hunks?: readonly HunkMatchInfo[];
+  /** The write replaced a file that already existed. */
+  readonly overwrites?: boolean;
+  /** Source content changed between verification and write. */
+  readonly rematched?: boolean;
 }
 export interface PatchDetails {
   readonly files: readonly FileDetails[];
@@ -32,13 +38,19 @@ export function makeDetails(files: readonly FileChange[]): PatchDetails {
   return {
     files: files.map((file) => {
       const identity = { kind: file.kind, path: file.path, moveTo: file.moveTo };
-      if (file.before === undefined) return identity;
+      const annotations = {
+        ...(file.hunks?.length ? { hunks: file.hunks } : {}),
+        ...(file.overwrites ? { overwrites: true } : {}),
+        ...(file.rematched ? { rematched: true } : {}),
+      };
+      if (file.before === undefined) return { ...identity, ...annotations };
       // Normalize display text only; filesystem content follows Codex's baseline.
       const display = (text: string) => text.replace(/\r\n?/g, "\n");
       const { diff } = generateDiffString(display(file.before), display(file.after));
       const lines = diff.split("\n");
       return {
         ...identity,
+        ...annotations,
         added: lines.filter((line) => line.startsWith("+")).length,
         removed: lines.filter((line) => line.startsWith("-")).length,
         diff,
@@ -96,6 +108,7 @@ export function renderPatchResult(
   // The file count and aggregate diff live in the tool call header, so the body
   // carries only the per-file rows (and their diffs when expanded).
   const rows: string[] = [];
+  const dim = (text: string) => theme.fg("dim", text);
   for (const file of expanded ? files : files.slice(0, 8)) {
     const marker = { add: "A", update: "M", delete: "D" }[file.kind];
     const path = safe(file.moveTo ? `${file.path} → ${file.moveTo}` : file.path).replaceAll(
@@ -103,8 +116,21 @@ export function renderPatchResult(
       " ",
     );
     rows.push(theme.fg("accent", `${marker} ${path}`));
+    if (file.overwrites) rows.push(dim("overwrote an existing file"));
+    if (file.rematched) rows.push(dim("rematched against content that changed while queued"));
+    if (expanded && file.hunks?.length) {
+      const normalized = file.hunks.filter((hunk) => hunk.strategy !== "exact").length;
+      if (normalized)
+        rows.push(
+          dim(
+            `${normalized} hunk${normalized === 1 ? "" : "s"} matched after whitespace or Unicode normalization`,
+          ),
+        );
+      for (const hunk of file.hunks.filter((hunk) => hunk.occurrences > 1))
+        rows.push(dim(`hunk ${hunk.hunk} matched the first of ${hunk.occurrences} occurrences`));
+    }
     if (file.diff === undefined)
-      rows.push(theme.fg("dim", "Diff unavailable: previous content could not be read."));
+      rows.push(dim("Diff unavailable: previous content could not be read."));
     if (expanded && file.diff) {
       const lines = safe(file.diff).split("\n");
       for (const line of lines.slice(0, 120)) {

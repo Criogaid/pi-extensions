@@ -1,8 +1,9 @@
 import * as fs from "node:fs/promises";
 import { dirname } from "node:path";
 import { parsePatch } from "./core/parser.ts";
-import type { FileOperation } from "./core/types.ts";
-import { applyUpdate } from "./core/update.ts";
+import type { FileOperation, HunkMatchInfo, HunkOutcome } from "./core/types.ts";
+import { applyReplacements, planUpdate } from "./core/update.ts";
+import { renderRejection, type RejectedFile } from "./report.ts";
 import {
   isMissing,
   openWorkspace,
@@ -45,6 +46,12 @@ export interface FileChange {
   /** Undefined when an overwritten file could not be read as UTF-8. */
   readonly before: string | undefined;
   readonly after: string;
+  /** Update hunks: where and how each chunk matched. */
+  readonly hunks?: readonly HunkMatchInfo[];
+  /** The write replaces a file that already existed (Add over a file, or Move onto one). */
+  readonly overwrites?: boolean;
+  /** Source content changed between verification and write; matched against live text. */
+  readonly rematched?: boolean;
 }
 export interface ApplyResult {
   readonly files: readonly FileChange[];
@@ -64,6 +71,15 @@ function errorText(error: unknown): string {
 }
 function checkAbort(signal?: AbortSignal): void {
   if (signal?.aborted) throw new Error("Patch cancelled.");
+}
+
+/** Carries per-hunk outcomes so the rejection report can list every failed chunk. */
+class UnmatchedUpdateError extends Error {
+  readonly outcomes: readonly HunkOutcome[];
+  constructor(path: string, outcomes: readonly HunkOutcome[]) {
+    super(`Failed to find expected lines in ${path}`);
+    this.outcomes = outcomes;
+  }
 }
 
 /** @internal */
@@ -100,21 +116,42 @@ async function verifyTarget(
   }
 }
 
-/** Missing optional files have empty before-text; unreadable ones have no before-text. */
+interface SourceRead {
+  readonly content: string | undefined;
+  readonly existed: boolean;
+}
+
+/** Missing optional files read as empty text; unreadable ones have no text at all. */
 async function readTarget(
   workspace: Workspace,
   target: WorkspacePath,
   optional: boolean,
-): Promise<string | undefined> {
-  if (!(await verifyTarget(workspace, target, optional))) return "";
+): Promise<SourceRead> {
+  const existed = await verifyTarget(workspace, target, optional);
+  if (!existed) return { content: "", existed: false };
   try {
-    return await workspace.fs.readFile(target.path);
+    return { content: await workspace.fs.readFile(target.path), existed: true };
   } catch (error) {
     // Codex permits overwriting files whose old contents cannot be read. The
     // optional read is for diff display, not a prerequisite for Add or Move.
-    if (optional) return undefined;
+    if (optional) return { content: undefined, existed: true };
     throw error;
   }
+}
+
+function matchedHunks(outcomes: readonly HunkOutcome[]): readonly HunkMatchInfo[] {
+  return outcomes.flatMap((outcome) =>
+    outcome.status === "matched"
+      ? [
+          {
+            hunk: outcome.hunk,
+            line: outcome.line,
+            strategy: outcome.strategy,
+            occurrences: outcome.occurrences,
+          },
+        ]
+      : [],
+  );
 }
 
 async function prepare(
@@ -123,9 +160,10 @@ async function prepare(
   previous?: PreparedChange,
 ): Promise<PreparedChange> {
   const { operation, source, destination } = resolved;
-  let before: string | undefined;
+  let content: string | undefined;
+  let existed = true;
   try {
-    before = await readTarget(workspace, source, operation.kind === "add");
+    ({ content, existed } = await readTarget(workspace, source, operation.kind === "add"));
   } catch (error) {
     const action =
       operation.kind === "update"
@@ -135,23 +173,42 @@ async function prepare(
           : "file to add";
     throw new Error(`Failed to read ${action} ${source.path}: ${errorText(error)}`);
   }
-  if (destination) await verifyTarget(workspace, destination, true);
-  const after =
-    operation.kind === "delete"
-      ? ""
-      : operation.kind === "add"
-        ? operation.content
-        : previous && previous.change.before === before
-          ? previous.change.after
-          : applyUpdate(before!, operation.chunks, source.path);
+  const destinationExists = destination !== undefined && (await verifyTarget(workspace, destination, true));
+  if (operation.kind !== "update") {
+    return {
+      ...resolved,
+      change: {
+        kind: operation.kind,
+        path: operation.path,
+        before: content,
+        after: operation.kind === "add" ? operation.content : "",
+        ...(operation.kind === "add" && existed ? { overwrites: true } : {}),
+      },
+    };
+  }
+  const before = content!;
+  let after: string;
+  let hunks: readonly HunkMatchInfo[] | undefined;
+  if (previous && previous.change.before === before) {
+    after = previous.change.after;
+    hunks = previous.change.hunks;
+  } else {
+    const plan = planUpdate(before, operation.chunks);
+    if (plan.outcomes.some((outcome) => outcome.status === "unmatched"))
+      throw new UnmatchedUpdateError(operation.path, plan.outcomes);
+    after = applyReplacements(before, plan.replacements);
+    hunks = matchedHunks(plan.outcomes);
+  }
   return {
     ...resolved,
     change: {
-      kind: operation.kind,
+      kind: "update",
       path: operation.path,
-      moveTo: operation.kind === "update" ? operation.moveTo : undefined,
+      moveTo: operation.moveTo,
       before,
       after,
+      ...(hunks !== undefined && hunks.length ? { hunks } : {}),
+      ...(destinationExists ? { overwrites: true } : {}),
     },
   };
 }
@@ -182,7 +239,7 @@ async function writeTarget(
   }
 }
 
-/** Verify the whole patch before applying it, as Codex's tool handler does. @internal */
+/** Verify the whole patch before applying it, reporting every failed hunk. @internal */
 export async function applyPatch(input: string, context: ApplyContext): Promise<ApplyResult> {
   checkAbort(context.signal);
   let workspace: Workspace;
@@ -216,15 +273,34 @@ export async function applyPatch(input: string, context: ApplyContext): Promise<
     ),
   ].sort();
   return withQueues(keys, context.withFileQueue, async () => {
+    // Verify every operation before writing any, collecting all failures so the
+    // model sees the complete rejection in one round trip.
     const prepared: PreparedChange[] = [];
-    try {
-      for (const operation of resolved) {
-        checkAbort(context.signal);
-        prepared.push(await prepare(workspace, operation));
+    const rejected: RejectedFile[] = [];
+    for (const entry of resolved) {
+      checkAbort(context.signal);
+      try {
+        prepared.push(await prepare(workspace, entry));
+      } catch (error) {
+        rejected.push(
+          error instanceof UnmatchedUpdateError
+            ? {
+                path: entry.operation.path,
+                kind: entry.operation.kind,
+                reason: error.message,
+                outcomes: error.outcomes,
+              }
+            : { path: entry.operation.path, kind: entry.operation.kind, reason: errorText(error) },
+        );
       }
-    } catch (error) {
-      throw new Error(`apply_patch verification failed: ${errorText(error)}`);
     }
+    if (rejected.length)
+      throw new Error(
+        renderRejection({
+          rejected,
+          verified: prepared.map((pending) => pending.operation.path),
+        }),
+      );
 
     const files: FileChange[] = [];
     let writesStarted = false;
@@ -252,13 +328,17 @@ export async function applyPatch(input: string, context: ApplyContext): Promise<
             await workspace.fs.unlink(source.path);
           }
         }
-        files.push(change);
+        files.push(change.before !== pending.change.before ? { ...change, rematched: true } : change);
       }
     } catch (error) {
       const partial = writesStarted
         ? `\nFilesystem changes may be partial; inspect ${currentPath} before retrying.${files.length ? `\nCompleted operations:\n${formatSummary(files).split("\n").slice(1).join("\n")}` : ""}`
         : "";
-      throw new Error(`apply_patch failed: ${errorText(error)}${partial}`);
+      const notApplied = prepared
+        .slice(files.length)
+        .map((pending) => pending.change.moveTo ?? pending.operation.path);
+      const skipped = notApplied.length ? `\nNot applied: ${notApplied.join(", ")}` : "";
+      throw new Error(`apply_patch failed: ${errorText(error)}${partial}${skipped}`);
     }
     return { files };
   });

@@ -136,10 +136,167 @@ test("verification failure leaves all files untouched", async () => {
       patch("*** Add File: new\n+x\n*** Update File: a\n@@\n-missing\n+new"),
       fs.context(),
     ),
-    /verification failed: Failed to find expected lines/,
+    (error: Error) =>
+      /operations failed; no files were written/.test(error.message) &&
+      /hunk 1: context lines not found/.test(error.message),
   );
   assert.equal(fs.writes.length, 0);
   assert.deepEqual(fs.snapshot(), { a: "old\n" });
+});
+
+test("rejections aggregate every failed operation and hunk without writing", async () => {
+  const fs = new MemoryFileSystem({ a: "alpha\n", b: "one\ntwo\n", c: "fine\n" });
+  const error = await applyPatch(
+    patch(
+      [
+        "*** Update File: a",
+        "@@",
+        "-missing",
+        "+X",
+        "@@",
+        "-absent",
+        "+Y",
+        "*** Update File: b",
+        "@@",
+        "-nope",
+        "+Z",
+        "*** Update File: c",
+        "@@",
+        "-fine",
+        "+good",
+      ].join("\n"),
+    ),
+    fs.context(),
+  ).then(
+    () => assert.fail("expected rejection"),
+    (error: Error) => error,
+  );
+  assert.match(error.message, /2 of 3 operations failed; no files were written/);
+  assert.match(error.message, /a \(update\): 2 of 2 hunks did not match/);
+  assert.match(error.message, /hunk 1: context lines not found[\s\S]*hunk 2: context lines not found/);
+  assert.match(error.message, /b \(update\): 1 of 1 hunks did not match/);
+  assert.match(error.message, /verified but not written \(whole patch rejected\): c/);
+  assert.equal(fs.writes.length, 0);
+  assert.deepEqual(fs.snapshot(), { a: "alpha\n", b: "one\ntwo\n", c: "fine\n" });
+});
+
+test("later hunks are still searched after an earlier hunk fails", async () => {
+  const fs = new MemoryFileSystem({ m: "gone\nkeep\n" });
+  const error = await applyPatch(
+    patch("*** Update File: m\n@@\n-missing\n+X\n@@\n-keep\n+KEPT"),
+    fs.context(),
+  ).then(
+    () => assert.fail("expected rejection"),
+    (error: Error) => error,
+  );
+  assert.match(error.message, /1 of 2 hunks did not match/);
+  assert.match(error.message, /hunk 1: context lines not found/);
+  assert.doesNotMatch(error.message, /hunk 2/);
+});
+
+test("drift diagnostics report candidates, ordering, and re-application", async () => {
+  const fs = new MemoryFileSystem({
+    w: "const  total = a  +  b;\n",
+    r: "const t = compute(a, b);\n",
+    s: "x\ny\n",
+    e: "mid\nend\n",
+  });
+  const error = await applyPatch(
+    patch(
+      [
+        "*** Update File: w",
+        "@@",
+        "-const total = a + b;",
+        "+const total = sum(a, b);",
+        "*** Update File: r",
+        "@@",
+        "-const t = add(a, b);",
+        "+const t = compute(a, b);",
+        "*** Update File: s",
+        "@@",
+        "-x",
+        "+ONE",
+        "@@",
+        "-x",
+        "+TWO",
+        "*** Update File: e",
+        "@@",
+        "-mid",
+        "+MID",
+        "*** End of File",
+      ].join("\n"),
+    ),
+    fs.context(),
+  ).then(
+    () => assert.fail("expected rejection"),
+    (error: Error) => error,
+  );
+  assert.match(error.message, /closest match at line 1: 1 of 1 context lines changed \(whitespace-only drift\)/);
+  assert.match(error.message, /the replacement text already occurs at line 1; this hunk may already be applied/);
+  assert.match(error.message, /hunk 2: context lines not found \(search started at line 2\)[\s\S]*context matches at line 1, outside the searched range/);
+  assert.match(error.message, /anchored to the end of the file\)[\s\S]*context matches at line 1, outside the searched range/);
+});
+
+test("write failures list the operations that were not applied", async () => {
+  const fs = new MemoryFileSystem();
+  fs.beforeWrite = (path) => {
+    if (path === resolve(ROOT, "b")) throw ioError("EACCES", path);
+  };
+  await assert.rejects(
+    applyPatch(
+      patch("*** Add File: a\n+first\n*** Add File: b\n+second\n*** Add File: c\n+third"),
+      fs.context(),
+    ),
+    /Filesystem changes may be partial;[\s\S]*Completed operations:\nA a[\s\S]*Not applied: b, c/,
+  );
+  assert.deepEqual(fs.snapshot(), { a: "first\n" });
+});
+
+test("successful updates carry per-hunk match details", async () => {
+  const fs = new MemoryFileSystem({ a: "one\n", b: "two\n" });
+  const result = await applyPatch(
+    patch(
+      "*** Update File: a\n@@\n-one\n+ONE\n@@\n+tail\n*** Update File: b\n@@\n-two  \n+TWO",
+    ),
+    fs.context(),
+  );
+  assert.deepEqual(result.files[0].hunks, [
+    { hunk: 1, line: 1, strategy: "exact", occurrences: 1 },
+    { hunk: 2, line: 2, strategy: "exact", occurrences: 1 },
+  ]);
+  assert.deepEqual(result.files[1].hunks, [
+    { hunk: 1, line: 1, strategy: "trim_end", occurrences: 1 },
+  ]);
+  assert.equal(result.files[0].overwrites, undefined);
+});
+
+test("overwrites are reported for adds and moves onto existing files", async () => {
+  const fs = new MemoryFileSystem({ dup: "old\n", dest: "d\n", src: "s\n" });
+  const result = await applyPatch(
+    patch(
+      "*** Add File: fresh\n+n\n*** Add File: dup\n+new\n*** Update File: src\n*** Move to: dest\n@@\n-s\n+m",
+    ),
+    fs.context(),
+  );
+  assert.equal(result.files[0].overwrites, undefined);
+  assert.equal(result.files[1].overwrites, true);
+  assert.equal(result.files[2].overwrites, true);
+  assert.deepEqual(fs.snapshot(), { fresh: "n\n", dup: "new\n", dest: "m\n" });
+});
+
+test("a source rewritten by an earlier move is rematched and flagged", async () => {
+  const fs = new MemoryFileSystem({ a: "same\nkeep A\n", b: "same\nkeep B\n" });
+  const result = await applyPatch(
+    patch(
+      "*** Update File: a\n*** Move to: b\n@@\n same\n*** Update File: b\n@@\n-same\n+changed",
+    ),
+    fs.context(),
+  );
+  assert.equal(result.files[1].rematched, true);
+  assert.deepEqual(result.files[1].hunks, [
+    { hunk: 1, line: 1, strategy: "exact", occurrences: 1 },
+  ]);
+  assert.deepEqual(fs.snapshot(), { b: "changed\nkeep A\n" });
 });
 
 test("I/O failures report partial application and retain already completed operations", async () => {
