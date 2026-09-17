@@ -16,7 +16,7 @@ import { Container, Text, truncateToWidth } from "@earendil-works/pi-tui";
 import type { Component } from "@earendil-works/pi-tui";
 import type { ModelRolesAPI } from "@d3ara1n/pi-model-roles";
 import { getModelRolesAPI } from "@d3ara1n/pi-model-roles";
-import type { ScoutConfig, ScoutContext, ScoutDecision, SkillEntry } from "./types.ts";
+import type { InjectedMessage, ScoutConfig, ScoutContext, ScoutDecision, SkillEntry } from "./types.ts";
 import { DEFAULT_CONFIG } from "./types.ts";
 import { loadScoutConfig } from "./config.ts";
 import { callSideAgent } from "./side-agent.ts";
@@ -226,6 +226,14 @@ export default function scoutExtension(pi: ExtensionAPI) {
     cachedAllSkills = [];
   });
 
+  // ── session_compact: reset description cache ────────────────
+  // Compaction replaces history — including earlier skill injections — with
+  // a summary, so descriptions may no longer be in context. Resetting makes
+  // the next injection re-describe and re-carry the usage instructions.
+  pi.on("session_compact", async () => {
+    resetSkillCache();
+  });
+
   // ── turn_end: cache assistant response for next turn's context ──
   pi.on("turn_end", async (event) => {
     const msg = event.message;
@@ -314,14 +322,14 @@ export default function scoutExtension(pi: ExtensionAPI) {
           reasoning: skip.reasoning,
           source: "short-circuit",
         };
-        // Unified apply phase: skill-router removes the skills section,
-        // model-router no-ops on null. Both are safe for a trivial ack.
-        const systemPrompt = await applyDecision(decision, scoutCtx);
+        // Unified apply phase: skill-router strips the skills section (no
+        // injection on a trivial ack — nothing to select), model-router
+        // no-ops on null. Both are safe for a trivial ack.
+        const applied = await applyDecision(decision, scoutCtx);
         lastDecision = decision;
         prevTurn = { userPrompt: event.prompt, assistantSummary: "" };
         ctx.ui.setStatus(STATUS_KEY, formatDecisionStatus(decision, scoutCtx));
-        if (systemPrompt !== event.systemPrompt) return { systemPrompt };
-        return;
+        return appliedResult(applied, event.systemPrompt);
       }
     }
 
@@ -376,7 +384,7 @@ export default function scoutExtension(pi: ExtensionAPI) {
 
     // Validate + zero via the registry, then apply.
     decision = normalizeDecision(decision, scoutCtx);
-    const systemPrompt = await applyDecision(decision, scoutCtx);
+    const applied = await applyDecision(decision, scoutCtx);
     lastDecision = decision;
 
     // Show result in status bar
@@ -388,9 +396,19 @@ export default function scoutExtension(pi: ExtensionAPI) {
       ctx.ui.notify(`scout: ${decision.errorDetail}`, "warning");
     }
 
-    // Return modified system prompt
-    if (systemPrompt !== event.systemPrompt) {
-      return { systemPrompt };
-    }
+    // Return the transformed system prompt and/or injected message, if any.
+    return appliedResult(applied, event.systemPrompt);
   });
+
+  /** Build the before_agent_start return from an applied decision: only the
+   *  fields that actually changed, so pi keeps its defaults otherwise. */
+  function appliedResult(
+    applied: { systemPrompt: string; message?: InjectedMessage },
+    originalPrompt: string,
+  ): { systemPrompt?: string; message?: InjectedMessage } | void {
+    const result: { systemPrompt?: string; message?: InjectedMessage } = {};
+    if (applied.systemPrompt !== originalPrompt) result.systemPrompt = applied.systemPrompt;
+    if (applied.message) result.message = applied.message;
+    if (result.systemPrompt !== undefined || result.message !== undefined) return result;
+  }
 }

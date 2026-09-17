@@ -72,18 +72,13 @@ export const modelRouterModule: ScoutModule<string | null> = {
     // No-op when keeping the current role.
     if (value == null || value === ctx.currentRole) return;
 
+    // No system-prompt annotation: appending a <current_model> tag would
+    // change the system prompt on every switch and invalidate the prompt
+    // cache for the whole conversation history. The status bar already
+    // surfaces the switch to the user.
     const switched = await switchToRole(ctx.pi, value, ctx.rolesApi);
     if (!switched.ok) {
       return { error: switched.reason ?? "model switch failed" };
-    }
-
-    const resolved = await ctx.rolesApi.resolveRoleAsync(value);
-    if (resolved?.model) {
-      return {
-        systemPrompt:
-          ctx.systemPrompt +
-          `\n\n<current_model>${resolved.model.provider}/${resolved.model.id} (role: ${value})</current_model>`,
-      };
     }
   },
 };

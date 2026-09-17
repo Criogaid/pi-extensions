@@ -10,7 +10,7 @@ Scout runs a cheap side model **before each turn** to look at what you just aske
 
 Three independent modules — toggle each one separately.
 
-**Skill router** (on by default) — The side model picks the skills relevant to your prompt and replaces pi's full skill list with just those. Your main model sees a shorter, focused prompt: less context noise, a smaller prompt to cache, lower cost.
+**Skill router** (on by default) — The side model picks the skills relevant to your prompt. Scout removes pi's full skill list from the system prompt and injects just the selected skills as a per-turn message instead. Your main model sees a short, focused prompt: less context noise, lower cost.
 
 **Model router** (off by default) — Shifts the active model based on task complexity: a heavy model for a refactor, a fast one for a quick question. Off by default because it changes your model persistently — see [Why model-router is off by default](#why-model-router-is-off-by-default).
 
@@ -116,6 +116,15 @@ Main model runs — with only the selected skills, on the chosen model
 ```
 
 A trivial acknowledgment is a short prompt that is *entirely* an ack — matched against a built-in 中/英/日/韓 phrase table. Long prompts are never treated as acks even if they begin with an ack word, so `好的，那我们重构整个模块` always reaches the side model.
+
+### Prompt cache design
+
+LLM prompt caches match on an exact request prefix (`tools → system → messages`): change one byte of the system prompt and the cache for the entire conversation history after it is gone. Scout is built around that constraint:
+
+- **The system prompt stays byte-stable.** While skill-router is enabled, scout strips pi's skills section with the same deterministic edit every turn, so from the second turn on the system prompt never changes — the `tools + system` prefix caches once for the whole session.
+- **Selected skills ride in messages, not the system prompt.** Each turn's selection is appended after the user prompt as a custom message. Injections are history: append-only bytes never invalidate the cached prefix, so each turn only pays full price for its own small block.
+- **Descriptions appear once.** A skill's description is injected the first time it is selected; later selections reference it with a one-line entry, since the description already sits in cached history. After a compaction (which summarizes that history away) scout re-describes on the next injection.
+- **Model switches remain the one cache cost.** Prompt caches are per-model, so a model-router switch re-warms the target model's cache — one reason model-router is off by default.
 
 ## Limitations
 

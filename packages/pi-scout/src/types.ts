@@ -86,10 +86,25 @@ export interface ValidateResult<V> {
   error?: string;
 }
 
+/** A context message a module appends to the session for this turn. */
+export interface InjectedMessage {
+  /** Custom type identifying the message (for renderers / inspection). */
+  customType: string;
+  /** Text content — stored in the session and sent to the LLM. */
+  content: string;
+  /** Whether the TUI renders a bubble for it. Scout injects LLM-only context, so false. */
+  display: boolean;
+}
+
 /** Result of applying a module's decision. */
 export interface ApplyResult {
-  /** Replacement system prompt (the module may transform it). */
+  /** Replacement system prompt (the module may transform it). Must be
+   *  deterministic per input — a per-turn system prompt change invalidates
+   *  the prompt cache for the entire conversation history that follows. */
   systemPrompt?: string;
+  /** Context message appended after the user prompt (append-only history,
+   *  so it never invalidates the cached prefix). */
+  message?: InjectedMessage;
   /** Failure reason — marks the decision as an error and zeros this field. */
   error?: string;
 }

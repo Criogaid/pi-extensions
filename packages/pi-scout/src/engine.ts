@@ -11,7 +11,7 @@
  * the registered modules.
  */
 
-import type { ScoutContext, ScoutDecision } from "./types.ts";
+import type { InjectedMessage, ScoutContext, ScoutDecision } from "./types.ts";
 import { MODULES, enabledModules } from "./modules/registry.ts";
 
 /** Status-bar prefix: icon in its state color, the "scout:" label always dim. */
@@ -78,23 +78,34 @@ export function normalizeDecision(decision: ScoutDecision, ctx: ScoutContext): S
   return { ...decision, fields, source, reasoning };
 }
 
+/** Aggregate result of applying a decision across all enabled modules. */
+export interface AppliedDecision {
+  /** Final (possibly module-transformed) system prompt. */
+  systemPrompt: string;
+  /** Context message to inject this turn, if any module produced one.
+   *  When several modules return messages, the last one wins. */
+  message?: InjectedMessage;
+}
+
 /**
  * Apply a decision via the registry: each enabled module runs its side
- * effects and may transform the system prompt. The prompt is threaded
- * through modules in registry order. Apply-time failures mark the decision
- * as an error and zero the offending field.
+ * effects and may transform the system prompt or inject a message. The
+ * prompt is threaded through modules in registry order. Apply-time failures
+ * mark the decision as an error and zero the offending field.
  *
- * @returns the final (possibly transformed) system prompt
+ * @returns the final system prompt plus any injected message
  *
  * @internal — exported for testing.
  */
-export async function applyDecision(decision: ScoutDecision, ctx: ScoutContext): Promise<string> {
+export async function applyDecision(decision: ScoutDecision, ctx: ScoutContext): Promise<AppliedDecision> {
   let systemPrompt = ctx.systemPrompt;
+  let message: InjectedMessage | undefined;
 
   for (const m of MODULES) {
     if (!ctx.config.modules[m.key]) continue;
     const res = await m.apply(decision.fields[m.field] as never, { ...ctx, systemPrompt });
     if (res?.systemPrompt !== undefined) systemPrompt = res.systemPrompt;
+    if (res?.message) message = res.message;
     if (res?.error) {
       decision.fields[m.field] = m.disabledValue();
       decision.source = "error";
@@ -102,5 +113,5 @@ export async function applyDecision(decision: ScoutDecision, ctx: ScoutContext):
     }
   }
 
-  return systemPrompt;
+  return { systemPrompt, message };
 }

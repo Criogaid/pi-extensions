@@ -7,7 +7,7 @@
  */
 
 import type { ScoutModule } from "../types.ts";
-import { filterSkillsBlock } from "../skill-inject.ts";
+import { buildSkillsInjection, stripSkillsSection } from "../skill-inject.ts";
 
 /**
  * Parse the skills field: comma-separated names, "none" → empty.
@@ -69,7 +69,12 @@ export const skillRouterModule: ScoutModule<string[]> = {
 
   describe: (value) => (value.length > 0 ? value.join(", ") : "(none)"),
 
+  // Strip pi's default skills section every turn (deterministic → the system
+  // prompt stays byte-stable across turns, keeping the prefix cacheable) and
+  // inject the selected skills as a per-turn message instead — append-only
+  // history never invalidates the cached prefix. See skill-inject.ts.
   apply: (value, ctx) => ({
-    systemPrompt: filterSkillsBlock(ctx.systemPrompt, value, ctx.skillEntries),
+    systemPrompt: stripSkillsSection(ctx.systemPrompt),
+    message: buildSkillsInjection(value, ctx.skillEntries) ?? undefined,
   }),
 };
