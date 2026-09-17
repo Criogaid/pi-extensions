@@ -1,7 +1,6 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
 interface RecordItem {
-  source: string;
   kind: string;
   text: string;
   thinking: string;
@@ -16,19 +15,19 @@ export class SessionSnapshot {
     this.capturedAt = capturedAt;
     for (const entry of branch) {
       if (entry.type === "message") {
-        this.addMessage(entry.id, entry.message);
+        this.addMessage(entry.message);
       } else if (entry.type === "custom_message") {
-        this.addMessage(entry.id, { ...entry, role: "custom" });
+        this.addMessage({ ...entry, role: "custom" });
       } else if (entry.type === "compaction" || entry.type === "branch_summary") {
-        this.records.push({ source: entry.id, kind: entry.type, text: entry.summary, thinking: "" });
+        this.records.push({ kind: entry.type, text: entry.summary, thinking: "" });
         if (entry.type === "compaction" && "retainedTail" in entry && Array.isArray(entry.retainedTail)) {
-          entry.retainedTail.forEach((message, i) => this.addMessage(`${entry.id}/retained/${i}`, message));
+          entry.retainedTail.forEach(message => this.addMessage(message));
         }
       }
     }
   }
 
-  private addMessage(source: string, value: unknown): void {
+  private addMessage(value: unknown): void {
     const m = value as Record<string, any>;
     const blocks: any[] = Array.isArray(m.content) ? m.content : [];
     const thinking = blocks.filter(b => b?.type === "thinking" && !b.redacted && typeof b.thinking === "string")
@@ -69,7 +68,7 @@ export class SessionSnapshot {
     }
     if (typeof m.summary === "string") parts.push(m.summary);
     if (m.customType) parts.unshift(`Extension message: ${m.customType}; display=${m.display}`);
-    this.records.push({ source, kind: String(m.role ?? "unknown"), text: parts.join("\n"), thinking });
+    this.records.push({ kind: String(m.role ?? "unknown"), text: parts.join("\n"), thinking });
   }
 
   reference(includeThinking = false): string {
@@ -81,9 +80,9 @@ export class SessionSnapshot {
         : "Thinking is not included.",
       "Images, the main system prompt, other branches and external files/logs are not included.",
     ].join("\n");
-    const records = this.records.map((r, i) => {
+    const records = this.records.map(r => {
       const thinking = includeThinking && r.thinking ? `\nSaved thinking:\n${r.thinking}` : "";
-      return `[M${i + 1}] ${r.kind}; source=${r.source}\n${r.text}${thinking}`;
+      return `[${r.kind}]\n${r.text}${thinking}`;
     }).join("\n\n");
     return `${header}\n\n${records || "(empty conversation)"}`;
   }
