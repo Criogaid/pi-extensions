@@ -37,11 +37,11 @@ export function registerPeekTool(pi: ExtensionAPI): void {
     label: "Peek at another instance",
     description:
       "Peek at another pi instance — observe its session without disturbing it. " +
-      "Read-only: a helper model answers from the peer's existing session record; the peer's agent is never involved and never learns you asked. " +
-      "Use for focused summaries, explanations, or details in saved tool evidence that the peer did not mention in its replies. " +
-      "Each call uses a fresh snapshot; include enough context for follow-up questions. " +
-      "Not for communication or coordination — the peer cannot see your question and cannot act on it. " +
-      "Use mesh_list first to discover names.",
+      "Read-only: a helper model answers from the peer's existing session record; the peer's agent never sees the question and cannot act on it — not a communication channel. " +
+      "Use mesh_list first to discover names. " +
+      "Best for focused summaries, explanations, or details in the peer's saved tool results that its replies did not mention. " +
+      "Strictly observation, not consultation: it reports only what the record contains — do not use it for design input, decisions, or advice. " +
+      "Each call uses a fresh snapshot; include enough context for follow-up questions.",
     promptSnippet: "Observe another pi instance's session without disturbing it",
 
     parameters: Type.Object({
