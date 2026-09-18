@@ -50,8 +50,10 @@ jobs:
         with:
           node-version: 24 # matches the version used by publish.yml
 
-      # Tests are zero-dependency (node:test + node built-ins only), so no
-      # `npm install` is needed — this keeps the job fast and side-effect-free.
-      # --if-present: only workspaces that declare a test script run.
+      # Several suites import real dependencies (unbash, @earendil-works/*
+      # framework packages), so node_modules must be installed.
+      - name: Install dependencies
+        run: npm ci
+
       - name: Run workspace tests
         run: npm test --workspaces --if-present
