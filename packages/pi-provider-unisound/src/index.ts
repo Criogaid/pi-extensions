@@ -17,6 +17,11 @@
  * official docs but were NOT live-tested (the dev key only has u2-flash
  * permission) — per-model thinking behavior still differs and is encoded
  * from the documented constraints below.
+ *
+ * Usage quota/balance reporting is not yet implemented — Unisound MaaS does
+ * not currently expose a public quota or balance API (dashboard/billing,
+ * /v1/me, /v1/balance, /v1/quota all return 404; no quota headers either).
+ * When one becomes available, integrate via @d3ara1n/pi-usage-block-core.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
