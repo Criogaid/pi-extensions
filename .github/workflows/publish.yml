@@ -13,7 +13,13 @@ permissions:
   id-token: write  # OIDC for npm trusted publishing
 
 jobs:
+  tests:
+    # Gate publishing on the monorepo test suite (typecheck + workspace
+    # tests across OSes) — see test.yml, also run on PRs.
+    uses: ./.github/workflows/test.yml
+
   publish:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

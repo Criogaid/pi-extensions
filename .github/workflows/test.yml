@@ -1,16 +1,39 @@
 name: Tests
 
-# Runs the test suites across linux / macos / windows so platform-specific
-# behavior (e.g. pi-access-denied's Git Bash / MSYS path handling) is exercised
-# on the platform it targets. Manual trigger only — run this before publishing
-# packages with platform-sensitive logic (pi-access-denied).
+# Offline monorepo verification: typecheck + every workspace's node:test
+# suite.
+#
+# Runs as a blocking check on PRs (fork PRs included — the suite needs no
+# secrets and no network), and is reused by publish.yml so a push to main
+# must pass before anything reaches npm. Manual trigger kept for ad-hoc runs
+# (e.g. before releasing platform-sensitive changes such as pi-access-denied's
+# Git Bash / MSYS path handling).
 on:
+  workflow_call:
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24 # matches the version used by publish.yml
+
+      # tsc resolves workspace devDependencies (pi-ai, pi-tui types, …).
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -20,19 +43,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
-    defaults:
-      run:
-        working-directory: packages/pi-access-denied
-
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 24 # matches the version used by publish.yml
 
       # Tests are zero-dependency (node:test + node built-ins only), so no
       # `npm install` is needed — this keeps the job fast and side-effect-free.
-      - name: Run tests
-        run: npm test
+      # --if-present: only workspaces that declare a test script run.
+      - name: Run workspace tests
+        run: npm test --workspaces --if-present
