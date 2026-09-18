@@ -85,6 +85,7 @@ test("keeps end-to-end throughput when the generation sample is too small", () =
   const result = calculateResponsePerformance(sample({
     outputTokens: 9,
     reasoningTokens: 0,
+    reasoningExpected: false,
     firstVisibleTextAt: 6_800,
   }));
   assert.equal(result.e2eTps, 1.5);
@@ -96,6 +97,7 @@ test("rejects a generation sample shorter than 250 ms", () => {
   const result = calculateResponsePerformance(sample({
     outputTokens: 10,
     reasoningTokens: 0,
+    reasoningExpected: false,
     firstVisibleTextAt: 6_751,
   }));
   assert.equal(result.e2eTps, 10 / 6);
@@ -107,6 +109,7 @@ test("represents non-streaming output as full wait with unavailable generation t
   const result = calculateResponsePerformance(sample({
     outputTokens: 50,
     reasoningTokens: 0,
+    reasoningExpected: false,
     firstVisibleTextAt: 7_000,
   }));
   assert.equal(result.waitMs, 6_000);
