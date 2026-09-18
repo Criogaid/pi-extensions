@@ -1,0 +1,30 @@
+{
+  "name": "@d3ara1n/pi-provider-unisound",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Unisound (云知声) MaaS provider for pi — registers U2-Flash via OpenAI-compatible API",
+  "homepage": "https://github.com/d3ara1n/pi-extensions/tree/main/packages/pi-provider-unisound#readme",
+  "bugs": {
+    "url": "https://github.com/d3ara1n/pi-extensions/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-extension"
+  ],
+  "main": "src/index.ts",
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/d3ara1n/pi-extensions",
+    "directory": "packages/pi-provider-unisound"
+  }
+}
