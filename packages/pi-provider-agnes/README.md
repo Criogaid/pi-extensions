@@ -13,7 +13,7 @@ Agnes AI provider for pi — registers two providers sharing the same text + ima
 
 ### `agnes`
 
-Token-based billing provider. Agnes has not published official token pricing, so cost values are 0 (no cost shown). Update when Agnes publishes pricing — use the non-discounted regular-period price (see [PROVIDER.md](../../PROVIDER.md)).
+Token-based billing provider. Agnes has not published official token pricing, so pi shows no cost estimates for these models.
 
 ### `agnes-plan`
 
@@ -59,4 +59,4 @@ None — this is a standalone provider with no pi-extension dependencies. It use
 
 ## Usage Quota Reporting
 
-Not yet implemented. Agnes AI does not currently expose a public quota or balance API. When one becomes available, quota reporting will be added via `@d3ara1n/pi-usage-block-core`. See [`plans/pi-provider-agnes.md`](../../plans/pi-provider-agnes.md) for the integration plan.
+Not yet implemented — Agnes AI does not currently expose a public quota or balance API. When one becomes available, quota reporting will be added via `@d3ara1n/pi-usage-block-core`.
