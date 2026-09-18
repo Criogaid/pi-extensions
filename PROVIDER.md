@@ -23,8 +23,8 @@
 
 这些通常从文档/模型卡片获取，但与 API 实际返回冲突时以实际为准：
 
-- 模型 ID 列表 → 调 `/v1/models`（如果有）交叉验证
-- context window 大小
+- 模型 ID 列表 → 调 `/v1/models`（如果有）交叉验证；不少平台的这个端点还返回 `context_window` / `max_output` 等结构化元数据，比模型卡片更可靠
+- context window 大小。注意宣告值与网关实际拦截上限可能不同（实测过宣告 512K、网关 1M 才拦的组合）——插件按宣告值保守声明，README 记录实测上限
 - 最大输出 token 数
 - 是否支持图片输入
 - 是否支持 reasoning（注意：有的模型文档说支持，但只能开不能关，此时需 `thinkingLevelMap: { off: null }`）
@@ -32,6 +32,13 @@
   - 填**非折扣**价格——最常用的常规期价（非活动期/非促销价），不用限时优惠或免费体验价
   - **未公布价格的模型直接填 0**（`{ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }`），绝不编造看似精确的数字
   - 订阅制（按月/按套餐计费）填 0
+
+## 同模型多网关：模型真相与网关行为分开看
+
+热门模型往往已出现在 pi 内置数据里（`pi-ai/dist/providers/data/*.json`——同一模型在原生 provider 和各中转网关下各有一条）。为新网关写 provider 时：
+
+- **模型级真相**（thinking 档位集合、context、模态）拿内置数据中**原生 provider 的条目**做基准交叉验证。各家网关对同一模型的裁剪应当一致或是其子集；发现更多档位时查网关文档确认是谁在做映射（如网关把 low/medium 映射成 high——此时按原生惯例隐藏别名档位，不要暴露等价假档）
+- **传输级 compat**（thinkingFormat、role、usage 流式位置）永远是网关自己的，不能抄任何现成条目。同一模型在不同网关下参数面不同是常态：glm-5.2 在 zai 原生用 `"zai"` 格式、Qwen Token Plan 用 `"qwen"`、云知声用 `thinking:{type}` + `reasoning_effort`，三套互不兼容
 
 ## 常见误判
 
