@@ -214,20 +214,50 @@ for (const dir of packageDirs) {
   else if (bumpLevel === "minor") newVersion = `${major}.${minor + 1}.0`;
   else newVersion = `${major}.${minor}.${patch + 1}`;
 
+  // ── 5.5 Registry-lag guard ──────────────────────────────
+  // npm's read API is eventually consistent: a sibling publish run that just
+  // finished may already have published this exact version while the
+  // `npm view` above still served the older one (observed as E409 "cannot
+  // publish over previously staged version"). Skip past taken versions.
+  while (run(`npm view ${fullName}@${newVersion} version`, { allowFail: true })) {
+    const [mj, mn, pt] = newVersion.split(".").map(Number);
+    log(`⚠ ${newVersion} already on npm (registry lag from a sibling run), trying ${mj}.${mn}.${pt + 1}`);
+    newVersion = `${mj}.${mn}.${pt + 1}`;
+  }
+
   log(`Bump: ${baseVersion} → ${newVersion} (${bumpLevel})`);
 
   // ── 6. Publish, then commit + tag only on success ───────
   const originalVersion = pkg.version;
-  const tag = `${fullName}@${newVersion}`;
 
   // Write new version to package.json for publish
   pkg.version = newVersion;
   writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2) + "\n");
 
   try {
-    run(`npm publish -w ${pkgDir} --access public --provenance`);
+    // E409 safety net: if the version raced onto npm between the guard above
+    // and this publish, bump patch and retry instead of failing the run — a
+    // skipped version number costs nothing, a failed release run doesn't
+    // self-heal.
+    for (let attempt = 1; ; attempt++) {
+      try {
+        run(`npm publish -w ${pkgDir} --access public --provenance`);
+        break;
+      } catch (e) {
+        const msg = e.stderr?.trim() || e.message || "";
+        if ((!msg.includes("E409") && !msg.includes("previously staged")) || attempt >= 3) throw e;
+        const [mj, mn, pt] = newVersion.split(".").map(Number);
+        log(`⚠ E409 on ${newVersion}, retrying as ${mj}.${mn}.${pt + 1}`);
+        newVersion = `${mj}.${mn}.${pt + 1}`;
+        pkg.version = newVersion;
+        writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2) + "\n");
+      }
+    }
     log(`✅ Published ${fullName}@${newVersion}`);
     published++;
+
+    // Computed after publish: an E409 retry may have bumped the version.
+    const tag = `${fullName}@${newVersion}`;
 
     // Only commit + tag on success
     run(`git add ${pkgJsonPath}`);
