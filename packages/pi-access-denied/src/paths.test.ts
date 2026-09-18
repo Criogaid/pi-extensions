@@ -21,7 +21,10 @@
  *    decision engine operates on posix-normalized strings, so it can be
  *    exercised cross-platform with literal /aaa/bbb style rule sets. This is
  *    where the unified allow/deny policy (config + session + builtin) is
- *    validated, including the user's redirect use case.
+ *    validated, including the user's redirect use case. Rule literals MUST
+ *    use multi-letter first segments: a config rule like "/a/b" is MSYS
+ *    drive-translated to "A:\\b" on win32 (see msysDrive) and silently
+ *    stops matching.
  *
  * 3. **POSIX behavior** — skipped on win32. Tests bash target extraction
  *    (pure syntax recovery of escaping paths) under a POSIX cwd.
@@ -382,8 +385,8 @@ describe("PathManager: cwd + allowedPaths", () => {
 describe("PathManager: same-depth allow/deny conflict", () => {
   test("same path allowed AND denied → deny wins (safe default)", () => {
     // A config error (same path in both lists) resolves to deny.
-    const pm = new PathManager("/proj", ["/a/b"], { "/a/b": "conflict" });
-    const d = pm.decide("/a/b/c");
+    const pm = new PathManager("/proj", ["/aaa/bbb"], { "/aaa/bbb": "conflict" });
+    const d = pm.decide("/aaa/bbb/ccc");
     assert.equal(d.kind, "deny");
     assert.equal(d.reason, "conflict");
   });
@@ -391,13 +394,13 @@ describe("PathManager: same-depth allow/deny conflict", () => {
 
 describe("PathManager: session rules override config (most specific wins)", () => {
   test("a session allow beneath a config deny wins for that subtree", () => {
-    // config deny /a/b  ·  session allow /a/b/c
-    //   /a/b/c/d → allow (session depth 3 > config depth 2)
-    //   /a/b/d   → deny  (config depth 2, no more specific rule)
-    const pm = new PathManager("/proj", [], { "/a/b": "blocked by config" });
-    pm.addSessionAllow("/a/b/c");
-    assert.equal(pm.decide("/a/b/c/d").kind, "allow");
-    const d = pm.decide("/a/b/d");
+    // config deny /aaa/bbb  ·  session allow /aaa/bbb/ccc
+    //   /aaa/bbb/ccc/ddd → allow (session depth 3 > config depth 2)
+    //   /aaa/bbb/ddd     → deny  (config depth 2, no more specific rule)
+    const pm = new PathManager("/proj", [], { "/aaa/bbb": "blocked by config" });
+    pm.addSessionAllow("/aaa/bbb/ccc");
+    assert.equal(pm.decide("/aaa/bbb/ccc/ddd").kind, "allow");
+    const d = pm.decide("/aaa/bbb/ddd");
     assert.equal(d.kind, "deny");
     assert.equal(d.reason, "blocked by config");
   });
@@ -424,33 +427,33 @@ describe("PathManager: session rules override config (most specific wins)", () =
 describe("PathManager: session rule subsumption", () => {
   test("adding a broader allow drops narrower allows beneath it", () => {
     const pm = new PathManager("/proj", [], {});
-    pm.addSessionAllow("/a/b/c");
-    pm.addSessionAllow("/a/b");
+    pm.addSessionAllow("/aaa/bbb/ccc");
+    pm.addSessionAllow("/aaa/bbb");
     const rules = pm.getRules().session.filter((r) => r.decision === "allow");
     assert.deepEqual(
       rules.map((r) => r.path),
-      ["/a/b"],
-    ); // /a/b/c dropped
+      ["/aaa/bbb"],
+    ); // /aaa/bbb/ccc dropped
   });
   test("adding a child under an existing parent allow is a no-op", () => {
     const pm = new PathManager("/proj", [], {});
-    pm.addSessionAllow("/a/b");
-    pm.addSessionAllow("/a/b/c");
+    pm.addSessionAllow("/aaa/bbb");
+    pm.addSessionAllow("/aaa/bbb/ccc");
     const rules = pm.getRules().session.filter((r) => r.decision === "allow");
     assert.deepEqual(
       rules.map((r) => r.path),
-      ["/a/b"],
+      ["/aaa/bbb"],
     );
   });
   test("a deny and an allow at different depths coexist (not subsumed)", () => {
     // Cross-decision rules are never dropped by subsumption — longest-prefix
-    // match handles their interaction. Adding allow /a/b must NOT erase a
-    // narrower deny /a/b/c.
+    // match handles their interaction. Adding allow /aaa/bbb must NOT erase a
+    // narrower deny /aaa/bbb/ccc.
     const pm = new PathManager("/proj", [], {});
-    pm.addSessionDeny("/a/b/c", "secret");
-    pm.addSessionAllow("/a/b");
-    assert.equal(pm.decide("/a/b/c/d").kind, "deny"); // narrower deny still wins
-    assert.equal(pm.decide("/a/b/d").kind, "allow"); // broader allow
+    pm.addSessionDeny("/aaa/bbb/ccc", "secret");
+    pm.addSessionAllow("/aaa/bbb");
+    assert.equal(pm.decide("/aaa/bbb/ccc/ddd").kind, "deny"); // narrower deny still wins
+    assert.equal(pm.decide("/aaa/bbb/ddd").kind, "allow"); // broader allow
   });
 });
 
