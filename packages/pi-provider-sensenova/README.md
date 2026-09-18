@@ -23,14 +23,7 @@ SenseNova (商汤日日新) provider for [Pi Coding Agent](https://pi.dev) — r
 
 Image-generation models (`sensenova-u1-fast`, `sensenova-u1.5-lite`) are intentionally not registered — their output modality is image, not chat.
 
-This provider registers the chat models with:
-
-- **OpenAI-compatible chat/completions transport** via pi's built-in provider layer
-- **`system` role compatibility** (`supportsDeveloperRole: false`)
-- **Reasoning controls** via `reasoning_effort`; pi's `minimal` thinking level is omitted because SenseNova chat models only accept `low` / `medium` / `high` / `none` (`kimi-k3` and `deepseek-v4-pro` validate more loosely but accept the same set)
-- **Tool calling and streaming usage** verified against the live API
-
-Other compatibility details such as overflow error text should be re-verified against the live API before changing compat flags; see [`PROVIDER.md`](../../PROVIDER.md).
+The chat models run over an OpenAI-compatible chat/completions API — tool calling, streaming, and usage reporting are verified against the live API. Reasoning accepts only `low` / `medium` / `high` / `none`, so pi's `minimal` thinking level is not offered for these models.
 
 ## Installation
 
