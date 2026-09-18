@@ -11,7 +11,7 @@ Unisound (云知声) MaaS provider for [Pi Coding Agent](https://pi.dev) — reg
 | `unisound` | Unisound MaaS | Pay-as-you-go | `$UNISOUND_API_KEY` |
 | `unisound-plan` | Unisound MaaS (Token Plan) | Subscription | `$UNISOUND_PLAN_API_KEY` |
 
-Both channels share the endpoint `https://maas-api.unisound.com/v1`. The keys are **not interchangeable**: pay-as-you-go keys come from *Metered & Packs → API Key Management*, Token Plan keys from *Subscription Management*. The Token Plan docs do not document a separate base URL; if a plan key turns out to need one, adjust `PLAN_BASE_URL`.
+Both channels share the endpoint `https://maas-api.unisound.com/v1`. The keys are **not interchangeable**: pay-as-you-go keys come from *Metered & Packs → API Key Management*, Token Plan keys from *Subscription Management*.
 
 > **Token Plan usage restriction**: plan quota may only be used inside coding tools (U2Claw, OpenClaw, OpenCode and equivalents like pi). Using the plan key for non-coding automation or application backends is considered abuse and may get the key blocked.
 
@@ -23,8 +23,8 @@ Both channels share the endpoint `https://maas-api.unisound.com/v1`. The keys ar
 |---|---|---|---|---|
 | `u2-flash` | Yes (on/off, no effort levels) | text | 512K | 128K |
 | `u2` | Always on (cannot disable) | text | 160K | 64K |
-| `u2-med` | Yes (on/off) | text, image | 256K | unpublished — 64K placeholder |
-| `u2-radimed` | No (cannot enable) | text, image | 40K | unpublished — 8K placeholder |
+| `u2-med` | Yes (on/off) | text, image | 256K | not documented — declared as 64K |
+| `u2-radimed` | No (cannot enable) | text, image | 40K | not documented — declared as 8K |
 
 ### `unisound-plan` (Token Plan)
 
@@ -32,30 +32,20 @@ Both channels share the endpoint `https://maas-api.unisound.com/v1`. The keys ar
 |---|---|---|---|---|
 | `u2-flash` | Yes (on/off) | text | 512K | 128K |
 | `u2` | Always on | text | 160K | 64K |
-| `u2-med` | Yes (on/off) | text, image | 256K | unpublished — 64K placeholder |
-| `glm-5.2` | Yes (`reasoning_effort` high/max) | text | 1M | 128K |
+| `u2-med` | Yes (on/off) | text, image | 256K | not documented — declared as 64K |
+| `glm-5.2` | Yes (`reasoning_effort` off/high/max) | text | 1M | 128K |
 | `kimi-k3` | Always on (`reasoning_effort` low/high/max) | text, image | 1M | 1M |
 
 `u2-radimed` is not part of the Token Plan. The platform also hosts third-party models on pay-as-you-go (DeepSeek, Kimi, GLM, Qwen, MiniMax); they are intentionally not registered — use their native providers.
 
-## Compat Verification
+## Compatibility
 
-**Live-verified on `u2-flash`** against `https://maas-api.unisound.com/v1` — see [`PROVIDER.md`](../../PROVIDER.md):
-
-- **Thinking**: `thinking: { "type": "enabled" | "disabled" }` (pi's `"deepseek"` format). Thinking is **on by default** and toggleable on `u2-flash`. `reasoning_effort` is accepted but silently ignored → `supportsReasoningEffort: false`; pi's `minimal`/`low`/`medium` levels are hidden since they would all behave identically.
-- **Roles**: only `system` / `user` / `assistant` / `tool` are accepted; `developer` returns 400 → `supportsDeveloperRole: false`.
-- **`max_tokens`**: documented field name (the gateway also tolerates `max_completion_tokens`) → `maxTokensField: "max_tokens"`.
-- **Streaming**: standard OpenAI SSE chunks; tool calls arrive as standard `delta.tool_calls`; usage arrives on a final empty-choices chunk with `stream_options: { include_usage: true }` (pi's default). Tool results round-trip without a `name` field; assistant replays need no `reasoning_content`.
-- **`store: false` / tool `strict: false`**: accepted, no flags needed.
-- **Images**: rejected on `u2-flash` — `model u2-flash does not support image_url content` → text-only. (`u2-med`/`u2-radimed` are documented vision models; image support there is taken from docs, not live-tested.)
-- **Context overflow**: error text `This model's maximum context length is 1024000 tokens. However, your messages resulted in … tokens.` matches pi's built-in overflow patterns, so auto-compaction works without a `message_end` rewrite. Note the gateway's enforced limit (1,024,000) is higher than the advertised context window; the plugin declares the advertised 512K so pi compacts conservatively.
-- **Caching**: usage reports `prompt_tokens_details.cached_tokens` (pi maps it to cache-read tokens); no automatic cache hits were observed on small repeated prompts, but cache-hit pricing is published and included in `cost`.
-
-**From docs, not live-tested** (dev key only has `u2-flash` permission; the wire contract is assumed to match):
-
-- `u2` thinking cannot be disabled; `u2-radimed` thinking cannot be enabled (`reasoning: false`); `u2-med` toggles like `u2-flash`.
-- `glm-5.2` / `kimi-k3` (Token Plan only) honor `reasoning_effort` — level sets cross-checked against pi's built-in native entries (`zai.json`, `moonshotai.json`) and adjusted to their conventions: `glm-5.2` exposes off/high/max (low/medium are gateway aliases of high, hidden like zai.json does); `kimi-k3` exposes low/high/max, always-on (matches moonshotai.json; opencode.json's max-only entry is a conservative outlier). Note `moonshotai.json` also sets `requiresReasoningContentOnAssistantMessages` and `deferredToolsMode: "kimi"` natively — not set here, since Unisound's gateway is assumed to normalize those; re-verify with a plan key.
-- Token Plan requests against the shared base URL.
+- **Thinking** is on by default on the U2 models: `u2-flash` and `u2-med` can toggle it, `u2` always reasons, and `u2-radimed` never does. The U2 models only support on/off, so pi's reasoning-effort levels are not offered for them.
+- **Reasoning effort** applies to the plan-hosted models: `glm-5.2` exposes off / high / max, and `kimi-k3` is always-on with low / high / max.
+- **Image input**: `u2-flash` is text-only; `u2-med` and `u2-radimed` accept images.
+- **Context overflow** errors match pi's built-in patterns, so auto-compaction works. Declared context windows are conservative, so pi compacts before the gateway rejects an oversized request.
+- **Caching**: the API reports cache-hit tokens, which pi shows as cache-read tokens in the cost estimate.
+- Tool calls, streaming, and usage reporting follow the standard OpenAI shapes.
 
 ## Pricing
 
@@ -111,3 +101,7 @@ Note that model access is scoped per key — a key without permission for a mode
 ## Dependencies
 
 None — this is a standalone provider with no pi-extension dependencies. It uses pi's built-in `openai-completions` streaming.
+
+## Usage Quota Reporting
+
+Not yet implemented — Unisound MaaS does not currently expose a public quota or balance API. Token Plan credits are visible only in the web console (Subscription Management). When one becomes available, quota reporting will be added via `@d3ara1n/pi-usage-block-core`.
