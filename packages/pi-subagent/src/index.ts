@@ -42,6 +42,15 @@ import {
 } from "./utils.ts";
 import { startSubagentRun, type RunHandle } from "./run.ts";
 import { buildInboxReminder, injectReminder } from "./reminder.ts";
+import {
+  availabilityFilePath,
+  buildAvailabilityReminder,
+  isEntryActive,
+  loadAvailability,
+  parseOffArgs,
+  saveAvailability,
+  type DisabledEntry,
+} from "./availability.ts";
 import { serializeInheritedConversation } from "./inheritance.ts";
 import { renderDelegateCall, renderDelegateResult } from "./render.ts";
 import { createViewPanel, unionViewRuns } from "./view.ts";
@@ -127,6 +136,154 @@ export default function subagentExtension(pi: ExtensionAPI) {
   function trackRun(run: RunHandle): void {
     liveRuns.add(run);
     void run.promise.then(() => liveRuns.delete(run));
+  }
+
+  // Situational availability state file (see availability.ts). Re-read from
+  // disk on every reminder build and command so external edits and sibling
+  // pi instances are picked up without a reload.
+  const availabilityPath = availabilityFilePath();
+
+  // ── Situational availability commands ────────────────────────────
+
+  /** "in 5h 12m" / "in 3d" — UI display only; the reminder stays absolute. */
+  function formatIn(target: string, now: Date): string {
+    const ms = new Date(target).getTime() - now.getTime();
+    if (!Number.isFinite(ms) || ms <= 0) return "expired";
+    const minutes = Math.floor(ms / 60_000);
+    const parts: string[] = [];
+    const d = Math.floor(minutes / 1440);
+    const h = Math.floor((minutes % 1440) / 60);
+    const m = minutes % 60;
+    if (d) parts.push(`${d}d`);
+    if (h) parts.push(`${h}h`);
+    if (m || parts.length === 0) parts.push(`${m}m`);
+    return `in ${parts.join(" ")}`;
+  }
+
+  function describeEntry(entry: DisabledEntry, now: Date): string {
+    const reason = entry.reason ? ` — ${entry.reason}` : "";
+    const until = entry.until
+      ? ` (until ${entry.until}, ${formatIn(entry.until, now)})`
+      : " (until manually re-enabled)";
+    return `${reason}${until}`;
+  }
+
+  async function handleAvailabilityCommand(
+    ctx: { ui: { notify(msg: string, level: "info" | "error"): void } },
+    name: string,
+    args: string,
+  ): Promise<void> {
+    const trimmed = args.trim();
+    const verb = (trimmed.split(/\s+/)[0] || "").toLowerCase();
+    const rest = trimmed.slice(verb.length).trim();
+
+    if (!verb) {
+      const entry = loadAvailability(availabilityPath).disabled[name];
+      const now = new Date();
+      if (entry && isEntryActive(entry, now)) {
+        ctx.ui.notify(`${name}: OFFLINE${describeEntry(entry, now)}`, "info");
+      } else {
+        ctx.ui.notify(`${name}: online. Usage: /subagent:avail ${name} off [duration] [reason]`, "info");
+      }
+      return;
+    }
+
+    if (verb === "on") {
+      const state = loadAvailability(availabilityPath);
+      if (!(name in state.disabled)) {
+        ctx.ui.notify(`${name} is already online.`, "info");
+        return;
+      }
+      delete state.disabled[name];
+      saveAvailability(availabilityPath, state);
+      // No broadcast needed: the context reminder reflects the file on the
+      // next provider call, so the model sees the role return implicitly.
+      ctx.ui.notify(`${name} re-enabled.`, "info");
+      return;
+    }
+
+    if (verb === "off") {
+      const { durationMs, reason } = parseOffArgs(rest);
+      const now = new Date();
+      const entry: DisabledEntry = {
+        reason,
+        at: now.toISOString(),
+        ...(durationMs !== undefined
+          ? { until: new Date(now.getTime() + durationMs).toISOString() }
+          : {}),
+      };
+      const state = loadAvailability(availabilityPath);
+      state.disabled[name] = entry;
+      saveAvailability(availabilityPath, state);
+      ctx.ui.notify(`${name} disabled${describeEntry(entry, now)}.`, "info");
+      return;
+    }
+
+    ctx.ui.notify(`Usage: /subagent:avail ${name} on | off [duration] [reason]`, "error");
+  }
+
+  /** The single availability command, parameterized by role name. */
+  function registerAvailabilityCommand(pi: ExtensionAPI): void {
+    pi.registerCommand("subagent:avail", {
+      description:
+        "Role availability: /subagent:avail [role] [on|off [duration] [reason]] — bare shows the overview",
+      getArgumentCompletions: (prefix) => {
+        // The completion protocol replaces the ENTIRE argument text with
+        // item.value (pi-tui passes the whole argument string as prefix),
+        // so second-word items must carry "<role> <verb>" as value while
+        // the list shows just the verb.
+        const trimmed = prefix.trimStart();
+        if (!trimmed.includes(" ")) {
+          const items = Object.keys(availableRoles)
+            .filter((name) => name.startsWith(trimmed))
+            .map((name) => ({
+              value: name,
+              label: name,
+              description:
+                name in loadAvailability(availabilityPath).disabled
+                  ? "currently OFFLINE"
+                  : undefined,
+            }));
+          return items.length > 0 ? items : null;
+        }
+        const role = trimmed.slice(0, trimmed.indexOf(" "));
+        const lastWord = trimmed.slice(trimmed.lastIndexOf(" ") + 1);
+        const items = ["on", "off"]
+          .filter((v) => v.startsWith(lastWord))
+          .map((v) => ({ value: `${role} ${v}`, label: v }));
+        return items.length > 0 ? items : null;
+      },
+      handler: async (args, ctx) => {
+        const trimmed = args.trim();
+        if (!trimmed) {
+          const state = loadAvailability(availabilityPath);
+          const now = new Date();
+          const lines: string[] = [];
+          for (const [name, entry] of Object.entries(state.disabled)) {
+            lines.push(
+              isEntryActive(entry, now)
+                ? `  ✗ ${name}: OFFLINE${describeEntry(entry, now)}`
+                : `  ✓ ${name}: TTL lapsed (lazily cleaned on next write)`,
+            );
+          }
+          if (lines.length === 0) lines.push("  (all roles online)");
+          lines.push("", `State file: ${availabilityPath}`);
+          ctx.ui.notify(lines.join("\n"), "info");
+          return;
+        }
+        const spaceIdx = trimmed.indexOf(" ");
+        const role = spaceIdx === -1 ? trimmed : trimmed.slice(0, spaceIdx);
+        const rest = spaceIdx === -1 ? "" : trimmed.slice(spaceIdx + 1).trim();
+        if (!(role in availableRoles)) {
+          ctx.ui.notify(
+            `Unknown role: ${role}. Available: ${Object.keys(availableRoles).join(", ")}`,
+            "error",
+          );
+          return;
+        }
+        await handleAvailabilityCommand(ctx, role, rest);
+      },
+    });
   }
 
   function buildGuidelines(roles: Record<string, SubagentRole>): string[] {
@@ -251,6 +408,10 @@ export default function subagentExtension(pi: ExtensionAPI) {
     }
 
     registerTools();
+
+    // The availability command is static; registering it here keeps every
+    // session-shape concern in one place (registerCommand is idempotent).
+    registerAvailabilityCommand(pi);
   });
 
   pi.on("context", async (event, ctx) => {
@@ -269,10 +430,21 @@ export default function subagentExtension(pi: ExtensionAPI) {
     // branching away drops the check entry, branching back restores it), so
     // the inbox re-arms itself after tree navigation. Empty inbox and no
     // filtered notices → context stays untouched, cache fully stable.
-    const reminder = buildInboxReminder(
-      backgroundRuns.values(),
-      collectDeliveredIds(ctx.sessionManager.buildContextEntries()),
-    );
+    // Availability rides the same cache-stable head slot as the inbox: one
+    // byte-stable block naming the OFFLINE roles, re-read from disk every
+    // call (external edits and TTL lapses take effect on the next request).
+    // Same discipline as the inbox — absolute timestamps, sorted keys,
+    // nothing injected when everything is online.
+    const availabilityReminder = buildAvailabilityReminder(loadAvailability(availabilityPath));
+    const reminder = [
+      availabilityReminder,
+      buildInboxReminder(
+        backgroundRuns.values(),
+        collectDeliveredIds(ctx.sessionManager.buildContextEntries()),
+      ),
+    ]
+      .filter((block): block is string => block !== undefined)
+      .join("\n\n") || undefined;
     if (!reminder && messages.length === event.messages.length) return;
     return { messages: reminder ? injectReminder(messages, reminder) : messages };
   });
