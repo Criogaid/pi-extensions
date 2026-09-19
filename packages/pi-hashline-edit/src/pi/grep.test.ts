@@ -16,6 +16,7 @@ type FakeOptions = {
   lines?: string[];
   code?: number | null;
   stderr?: string;
+  validation?: { code: number | null; stderr: string };
   error?: Error;
   onRun?: () => void;
 };
@@ -47,6 +48,9 @@ function fakeBackend(options: FakeOptions = {}) {
       calls.push({ path, args });
       options.onRun?.();
       if (options.error) throw options.error;
+      if (args.includes("--quiet")) {
+        return { code: 1, stderr: "", ...options.validation, stopped: false };
+      }
       for (const line of options.lines ?? []) {
         if (!onLine(line)) return { code: null, stderr: options.stderr ?? "", stopped: true };
       }
@@ -106,7 +110,7 @@ test("formats parsed rg matches with full-line hash anchors", async () => {
       assert.match(output, /3#[0-9A-Z]+│alpha only/);
       assert.deepEqual(fake.calls[0], {
         path: "/fake/rg",
-        args: ["--json", "--line-number", "--color=never", "--hidden", "-e", "alpha", "--", dir],
+        args: ["--json", "--line-number", "--color=never", "--hidden", "--ignore-case", "--fixed-strings", "-e", "alpha", "--", dir],
       });
     }),
   );
@@ -324,5 +328,128 @@ test("delegates an already-aborted call and rejects an abort during rg execution
       ),
       /Operation aborted/,
     );
+  });
+});
+
+test("auto-detects modes with rg validation while preserving explicit overrides", async () => {
+  await withDir(async (dir) => {
+    const valid = fakeBackend();
+    const invalid = fakeBackend({ validation: { code: 2, stderr: "regex parse error:\nerror: unclosed group" } });
+    const tool = makeGrepOverrideWithBackend(dir, valid.backend);
+    const fallback = makeGrepOverrideWithBackend(dir, invalid.backend);
+
+    const result = await call(fallback, { pattern: "queueTool(" });
+    assert.match(text(result), /Invalid regex; searched all patterns as literal text/);
+    await call(fallback, { pattern: ["plain", "broken("] });
+    await call(tool, { pattern: "value.*" });
+    await call(tool, { pattern: "plain", literal: false });
+    await call(tool, { pattern: "value.*", literal: true });
+
+    assert.deepEqual(
+      [...invalid.calls, ...valid.calls].filter(({ args }) => !args.includes("--quiet"))
+        .map(({ args }) => args.includes("--fixed-strings")),
+      [true, true, false, false, true],
+    );
+    assert.equal(valid.calls.filter(({ args }) => args.includes("--quiet")).length, 1);
+    assert.deepEqual(invalid.calls[0].args, ["--quiet", "-e", "queueTool(", "--", "-"]);
+
+    const failed = fakeBackend({ validation: { code: 2, stderr: "Permission denied" } });
+    await assert.rejects(
+      call(makeGrepOverrideWithBackend(dir, failed.backend), { pattern: "value.*" }),
+      /Permission denied/,
+    );
+    assert.equal(failed.calls.length, 1);
+  });
+});
+
+test("uses smart-case by default and preserves explicit case overrides", async () => {
+  await withDir(async (dir) => {
+    const target = join(dir, "case.ts");
+    await writeFile(target, "FOO alpha\n");
+
+    const lower = fakeBackend({ lines: [rgMatch(target, 1, "FOO alpha\n")] });
+    const lowerResult = await call(makeGrepOverrideWithBackend(dir, lower.backend), {
+      pattern: ["foo", "alpha"],
+      matchMode: "all",
+    });
+    assert.match(text(lowerResult), /FOO alpha/);
+
+    const mixed = fakeBackend({ lines: [rgMatch(target, 1, "FOO alpha\n")] });
+    const mixedResult = await call(makeGrepOverrideWithBackend(dir, mixed.backend), {
+      pattern: ["Foo", "alpha"],
+      matchMode: "all",
+    });
+    assert.equal(text(mixedResult), "No matches found");
+
+    const flags = fakeBackend();
+    const tool = makeGrepOverrideWithBackend(dir, flags.backend);
+    await call(tool, { pattern: "lower" });
+    await call(tool, { pattern: "Upper" });
+    await call(tool, { pattern: "lower", ignoreCase: true });
+    await call(tool, { pattern: "lower", ignoreCase: false });
+    await call(tool, { pattern: "foo\\S*" });
+    await call(tool, { pattern: "foo\\S*", ignoreCase: true });
+    assert.deepEqual(
+      flags.calls.filter(({ args }) => !args.includes("--quiet"))
+        .map(({ args }) => [args.includes("--ignore-case"), args.includes("--case-sensitive")]),
+      [[true, false], [false, true], [true, false], [false, true], [false, true], [true, false]],
+    );
+  });
+});
+
+test("native fallback receives resolved defaults and preserves explicit overrides", async () => {
+  await withDir(async (dir) => {
+    const fake = fakeBackend();
+    fake.backend.findRg = async () => null;
+    const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+    const cases = [
+      { params: { pattern: "foo" }, literal: true, ignoreCase: true },
+      { params: { pattern: "Foo" }, literal: true, ignoreCase: false },
+      { params: { pattern: "(?i)foo" }, literal: false, ignoreCase: true },
+      { params: { pattern: "(?P<name>foo)" }, literal: false, ignoreCase: false },
+      { params: { pattern: "foo", literal: false, ignoreCase: false }, literal: false, ignoreCase: false },
+      { params: { pattern: "queueTool(", literal: true, ignoreCase: true }, literal: true, ignoreCase: true },
+    ];
+    for (const { params, literal, ignoreCase } of cases) {
+      const input = { ...params, path: "fixture.ts", glob: "*.ts", context: 2, limit: 3 };
+      assert.equal(text(await call(tool, input)), "delegated");
+      assert.deepEqual(fake.delegates.at(-1)![1], { ...input, literal, ignoreCase });
+    }
+    assert.equal(fake.delegates.length, cases.length);
+    assert.equal(fake.calls.length, 0);
+  });
+});
+
+test("native fallback retries only automatic regex parse failures as literal text", async () => {
+  await withDir(async (dir) => {
+    for (const scenario of ["auto", "explicit", "download", "abort"]) {
+      const fake = fakeBackend();
+      fake.backend.findRg = async () => null;
+      const controller = new AbortController();
+      const delegate = fake.backend.delegate;
+      fake.backend.delegate = async (...args) => {
+        const result = await delegate(...args);
+        if (args[1].literal) return result;
+        if (scenario === "abort") controller.abort();
+        throw new Error(scenario === "download"
+          ? "ripgrep (rg) is not available and could not be downloaded"
+          : "rg: regex parse error:\nerror: unclosed group");
+      };
+      const params = { pattern: "queueTool(", ...(scenario === "explicit" ? { literal: false } : {}) };
+      const result = call(makeGrepOverrideWithBackend(dir, fake.backend), params, controller.signal);
+      if (scenario === "auto") {
+        assert.deepEqual((await result).content, [
+          { type: "text", text: "delegated" },
+          { type: "text", text: "[Invalid regex; searched all patterns as literal text]" },
+        ]);
+        assert.equal(fake.delegates.length, 2);
+        assert.deepEqual(fake.delegates[1][1], { pattern: "queueTool(", ignoreCase: false, literal: true });
+      } else {
+        await assert.rejects(result, scenario === "download" ? /could not be downloaded/
+          : scenario === "abort" ? /Operation aborted/ : /regex parse error/);
+        assert.equal(fake.delegates.length, 1);
+      }
+      assert.equal(fake.calls.length, 0);
+    }
   });
 });
