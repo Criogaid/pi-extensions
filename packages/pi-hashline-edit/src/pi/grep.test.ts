@@ -163,11 +163,16 @@ test("applies all, exclude, context, and CRLF filtering after rg output", async 
         ],
       });
 
-      const result = await call(makeGrepOverrideWithBackend(dir, fake.backend), {
+      const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+      const contextSchema: any = tool.parameters.properties.context;
+      assert.equal(contextSchema.type, "integer");
+      assert.equal(contextSchema.minimum, 0);
+      assert.equal(contextSchema.maximum, 20);
+      const result = await call(tool, {
         pattern: ["alpha", "beta$"],
         matchMode: "all",
         excludePattern: "drop",
-        context: 1,
+        context: 1.9,
       });
       assert.equal(
         text(result),
@@ -180,6 +185,29 @@ test("applies all, exclude, context, and CRLF filtering after rg output", async 
       );
     }),
   );
+});
+
+test("context bounds apply to each side of a match, including direct runtime calls", async () => {
+  await withDir(async (dir) => {
+    const file = join(dir, "a.ts");
+    const lines = Array.from({ length: 45 }, (_, i) => i === 22 ? "needle" : `line ${i + 1}`);
+    await writeFile(file, lines.join("\n"));
+    const fake = fakeBackend({ lines: [rgMatch(file, 23, "needle\n")] });
+    const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+
+    for (const context of [20, 1_000]) {
+      const output = text(await call(tool, { pattern: "needle", context })).split("\n");
+      assert.equal(output.length, 42);
+      assert.match(output[1], /^3#[0-9A-Z]+│line 3$/);
+      assert.match(output[21], /^23#[0-9A-Z]+│needle$/);
+      assert.match(output[41], /^43#[0-9A-Z]+│line 43$/);
+    }
+    for (const context of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const output = text(await call(tool, { pattern: "needle", context })).split("\n");
+      assert.equal(output.length, 2);
+      assert.match(output[1], /^23#[0-9A-Z]+│needle$/);
+    }
+  });
 });
 
 test("passes output flags and formats files and counts", async () => {
@@ -289,6 +317,19 @@ test("delegates only safe fallbacks and rejects extended missing-rg requests", a
         text(await call(makeGrepOverrideWithBackend(dir, absent.backend), { pattern: "x" })),
         "delegated",
       );
+      assert.deepEqual(absent.delegates.at(-1)?.[1], { pattern: "x" });
+      const tool = makeGrepOverrideWithBackend(dir, absent.backend);
+      for (const [context, expected] of [
+        [1_000, 20],
+        [1.9, 1],
+        [-1, 0],
+        [Number.POSITIVE_INFINITY, 0],
+      ]) {
+        const params = { pattern: "x", context };
+        await call(tool, params);
+        assert.equal(absent.delegates.at(-1)?.[1].context, expected);
+        assert.equal(params.context, context);
+      }
       await assert.rejects(
         call(makeGrepOverrideWithBackend(dir, absent.backend), {
           pattern: ["x", "y"],

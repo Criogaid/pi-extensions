@@ -52,6 +52,7 @@ import { parseHashline } from "./render.ts";
 const DEFAULT_LIMIT = 100;
 /** Max chars per result line for display (mirrors pi's truncate.ts; not exported there). */
 const GREP_MAX_LINE_LENGTH = 500;
+const GREP_CONTEXT_MAX = 20;
 
 /** Locate ripgrep: pi's bundled bin first, then PATH. Returns null if not found. */
 async function findRg(): Promise<string | null> {
@@ -107,6 +108,11 @@ function toArray(v: string | string[] | undefined): string[] {
   return Array.isArray(v) ? v : [v];
 }
 
+function clampContext(context: number | undefined): number {
+  if (!context || !Number.isFinite(context) || context < 0) return 0;
+  return Math.min(Math.floor(context), GREP_CONTEXT_MAX);
+}
+
 const grepOverrideSchema = Type.Object({
   pattern: Type.Union([Type.String(), Type.Array(Type.String())], {
     description:
@@ -145,9 +151,10 @@ const grepOverrideSchema = Type.Object({
     }),
   ),
   context: Type.Optional(
-    Type.Number({
-      description:
-        "Number of lines to show before and after each match (default: 0); context lines are anchored too",
+    Type.Integer({
+      minimum: 0,
+      maximum: GREP_CONTEXT_MAX,
+      description: `Number of lines on each side of a match (0-${GREP_CONTEXT_MAX}; default: 0); context lines are anchored too`,
     }),
   ),
   limit: Type.Optional(
@@ -365,8 +372,10 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
       onUpdate: any,
     ): Promise<any> {
       const state = getState();
+      const ctx = clampContext(params.context);
+      const delegatedParams = params.context === undefined ? params : { ...params, context: ctx };
       // aborted → built-in grep (it handles abort itself)
-      if (signal?.aborted) return backend.delegate(toolCallId, params, signal, onUpdate);
+      if (signal?.aborted) return backend.delegate(toolCallId, delegatedParams, signal, onUpdate);
 
       const patterns = toArray(params.pattern);
       if (patterns.length === 0) throw new Error("pattern is required (got an empty array)");
@@ -384,7 +393,7 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
       const rgPath = await backend.findRg();
       // ripgrep unavailable → built-in (it can auto-download rg), but only for plain params
       if (!rgPath) {
-        if (legacyShaped) return backend.delegate(toolCallId, params, signal, onUpdate);
+        if (legacyShaped) return backend.delegate(toolCallId, delegatedParams, signal, onUpdate);
         throw new Error(
           "ripgrep (rg) not found; extended grep params cannot fall back to the built-in grep. Retry with a simple pattern first, or use bash",
         );
@@ -393,8 +402,7 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
       const excludes = toArray(params.excludePattern);
       const matchMode: "any" | "all" = params.matchMode ?? "any";
       const outputMode: "content" | "files" | "count" = params.outputMode ?? "content";
-      const { glob, ignoreCase, literal, wordMatch, context, limit } = params;
-      const ctx = context && context > 0 ? context : 0;
+      const { glob, ignoreCase, literal, wordMatch, limit } = params;
       const searchPaths = (() => {
         const raw = toArray(params.path);
         return (raw.length ? raw : ["."]).map((p) => canonicalPath(cwd, p));
