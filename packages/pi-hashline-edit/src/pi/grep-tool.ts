@@ -91,7 +91,7 @@ function compileLineMatcher(
 ): RegExp {
   let source = opts.literal ? escapeRegex(pattern) : pattern;
   if (opts.word) source = `\\b(?:${source})\\b`;
-  const flags = opts.ignoreCase ? "i" : "";
+  const flags = opts.ignoreCase ? "iu" : "u";
   try {
     return new RegExp(source, flags);
   } catch (err) {
@@ -110,24 +110,22 @@ function toArray(v: string | string[] | undefined): string[] {
 const grepOverrideSchema = Type.Object({
   pattern: Type.Union([Type.String(), Type.Array(Type.String())], {
     description:
-      "Search pattern (regex, or literal with literal:true). String or array; an array combines patterns per matchMode (any = OR, all = AND on the same line)",
+      "Regex pattern, or literal text with literal:true. String or array; arrays combine per matchMode.",
   }),
   matchMode: Type.Optional(
     Type.Union([Type.Literal("any"), Type.Literal("all")], {
       description:
-        'How multiple patterns combine (default "any"). "any": line matches at least one pattern. "all": line must match every pattern — equivalent to `grep A | grep B`',
+        '"any" (default): OR. "all": AND on the same line.',
     }),
   ),
   excludePattern: Type.Optional(
     Type.Union([Type.String(), Type.Array(Type.String())], {
-      description:
-        "Drop lines matching this pattern, like grep -v (string or array; same regex/literal/ignoreCase settings as pattern). Applied after pattern matching",
+      description: "Drop lines matching any exclusion after pattern matching; uses the same literal and ignoreCase settings.",
     }),
   ),
   outputMode: Type.Optional(
     Type.Union([Type.Literal("content"), Type.Literal("files"), Type.Literal("count")], {
-      description:
-        'Output shape (default "content"). "content": anchored matching lines. "files": only file paths with matches (rg -l). "count": per-file match counts + total (grep -c)',
+      description: '"content" (default): anchored lines. "files": paths. "count": matching lines per file and total.',
     }),
   ),
   wordMatch: Type.Optional(Type.Boolean({ description: "Match whole words only (rg -w)" })),
@@ -139,11 +137,11 @@ const grepOverrideSchema = Type.Object({
     Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" }),
   ),
   ignoreCase: Type.Optional(
-    Type.Boolean({ description: "Case-insensitive search (default: false)" }),
+    Type.Boolean({ description: "Case-insensitive search (default: false); applies to pattern and excludePattern." }),
   ),
   literal: Type.Optional(
     Type.Boolean({
-      description: "Treat pattern as literal string instead of regex (default: false)",
+      description: "Treat pattern and excludePattern as literal text (default: false; regex). Invalid regexes return an error.",
     }),
   ),
   context: Type.Optional(
@@ -305,14 +303,12 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
     name: "grep" as const,
     label: "grep",
     description:
-      "Search file contents for a pattern. Results are grouped by file with LINE#HASH anchors usable directly in edit. Supports multi-pattern AND (matchMode:all), line exclusion (excludePattern, grep -v), whole-word matching (wordMatch), multiple search paths, and files-only / count output modes — the common `grep A | grep -v B` / `rg -l` / `grep -c` pipelines without bash. Respects .gitignore.",
-    promptSnippet:
-      "Search file contents; results show LINE#HASH anchors usable directly in edit; multi-pattern AND, exclude, files-only and count modes replace bash grep pipelines",
+      "Search file contents, respecting .gitignore. Content results are grouped by file and include LINE#HASH anchors usable in edit; built-in grep fallback results have no anchors.",
+    promptSnippet: "Search file contents with edit-ready line anchors",
     promptGuidelines: [
-      "Results are grouped by file under a `path · N matches` header; each line shows `LINE#HASH│content` (same format as read).",
-      "Copy `LINE#HASH` straight into an edit `anchor`/`end` — no re-read needed. Context lines (from `context`) are anchored and editable too.",
-      'Prefer this over bash pipes: `matchMode:"all"` + `excludePattern` express `grep A | grep -v B`; `outputMode:"files"`/`"count"` replace `rg -l`/`grep -c` when you only need locations or counts. `files` output pastes back as a `path` array.',
-      "Pass `pattern` (string or array); optionally `path` (string or array), `glob`, `ignoreCase`, `literal`, `wordMatch`, `context` (lines before+after each match), `limit` (max matches, default 100).",
+      "Prefer the grep tool for file-content searches.",
+      "Use returned LINE#HASH anchors directly in edit when present; no re-read is needed.",
+      'Use outputMode:"files"/"count" when only paths or counts are needed; use matchMode:"all" and excludePattern for line-level filters instead of shell pipelines.',
     ],
     parameters: grepOverrideSchema,
 
@@ -372,6 +368,9 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
       // aborted → built-in grep (it handles abort itself)
       if (signal?.aborted) return backend.delegate(toolCallId, params, signal, onUpdate);
 
+      const patterns = toArray(params.pattern);
+      if (patterns.length === 0) throw new Error("pattern is required (got an empty array)");
+
       // Plain built-in-shaped params (single string pattern/path, no new fields)
       // can delegate safely; anything else must run the local pipeline below.
       const legacyShaped =
@@ -391,9 +390,7 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
         );
       }
 
-      const patterns = toArray(params.pattern);
       const excludes = toArray(params.excludePattern);
-      if (patterns.length === 0) throw new Error("pattern is required (got an empty array)");
       const matchMode: "any" | "all" = params.matchMode ?? "any";
       const outputMode: "content" | "files" | "count" = params.outputMode ?? "content";
       const { glob, ignoreCase, literal, wordMatch, context, limit } = params;

@@ -326,3 +326,60 @@ test("delegates an already-aborted call and rejects an abort during rg execution
     );
   });
 });
+
+test("keeps regex and case-sensitive defaults across rg and line filters", async () => {
+  await withDir(async (dir) => {
+    const target = join(dir, "case.ts");
+    await writeFile(target, "FOO alpha\n");
+    const fake = fakeBackend({ lines: [rgMatch(target, 1, "FOO alpha\n")] });
+    const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+    const query = { pattern: ["foo", "alpha"], matchMode: "all", excludePattern: "BETA" };
+
+    assert.equal(text(await call(tool, query)), "No matches found");
+    assert.match(text(await call(tool, { ...query, ignoreCase: true })), /FOO alpha/);
+    assert.match(text(await call(tool, { pattern: "FOO", literal: true })), /FOO alpha/);
+    assert.deepEqual(fake.calls.map(({ args }) => ({
+      ignoreCase: args.includes("--ignore-case"),
+      literal: args.includes("--fixed-strings"),
+    })), [
+      { ignoreCase: false, literal: false },
+      { ignoreCase: true, literal: false },
+      { ignoreCase: false, literal: true },
+    ]);
+
+    const invalid = fakeBackend({ code: 2, stderr: "regex parse error:\nerror: unclosed group" });
+    await assert.rejects(
+      call(makeGrepOverrideWithBackend(dir, invalid.backend), { pattern: "queueTool(" }),
+      /regex parse error/,
+    );
+    assert.equal(invalid.calls.length, 1);
+    assert.ok(!invalid.calls[0].args.includes("--fixed-strings"));
+  });
+});
+
+test("native fallback forwards parameters unchanged and propagates regex errors", async () => {
+  await withDir(async (dir) => {
+    const fake = fakeBackend();
+    fake.backend.findRg = async () => null;
+    const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+    const cases = [
+      { pattern: "foo" },
+      { pattern: "(?i)foo" },
+      { pattern: "queueTool(", literal: true, ignoreCase: true },
+    ];
+    for (const params of cases) {
+      const input = { ...params, path: "fixture.ts", glob: "*.ts", context: 2, limit: 3 };
+      assert.equal(text(await call(tool, input)), "delegated");
+      assert.deepEqual(fake.delegates.at(-1)![1], input);
+    }
+    assert.equal(fake.delegates.length, cases.length);
+    assert.equal(fake.calls.length, 0);
+    fake.backend.delegate = async (...args) => {
+      fake.delegates.push(args);
+      throw new Error("regex parse error: unclosed group");
+    };
+    const failingTool = makeGrepOverrideWithBackend(dir, fake.backend);
+    await assert.rejects(call(failingTool, { pattern: "queueTool(" }), /regex parse error/);
+    assert.equal(fake.delegates.length, cases.length + 1);
+  });
+});
