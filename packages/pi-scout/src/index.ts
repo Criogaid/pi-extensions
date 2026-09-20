@@ -305,7 +305,7 @@ export default function scoutExtension(pi: ExtensionAPI) {
       rolesApi,
       skillEntries,
       currentRole,
-      systemPrompt: event.systemPrompt,
+      systemPromptOptions: event.systemPromptOptions,
       theme,
     };
 
@@ -329,7 +329,7 @@ export default function scoutExtension(pi: ExtensionAPI) {
         lastDecision = decision;
         prevTurn = { userPrompt: event.prompt, assistantSummary: "" };
         ctx.ui.setStatus(STATUS_KEY, formatDecisionStatus(decision, scoutCtx));
-        return appliedResult(applied, event.systemPrompt);
+        return appliedResult(applied);
       }
     }
 
@@ -396,19 +396,10 @@ export default function scoutExtension(pi: ExtensionAPI) {
       ctx.ui.notify(`scout: ${decision.errorDetail}`, "warning");
     }
 
-    // Return the transformed system prompt and/or injected message, if any.
-    return appliedResult(applied, event.systemPrompt);
+    return appliedResult(applied);
   });
 
-  /** Build the before_agent_start return from an applied decision: only the
-   *  fields that actually changed, so pi keeps its defaults otherwise. */
-  function appliedResult(
-    applied: { systemPrompt: string; message?: InjectedMessage },
-    originalPrompt: string,
-  ): { systemPrompt?: string; message?: InjectedMessage } | void {
-    const result: { systemPrompt?: string; message?: InjectedMessage } = {};
-    if (applied.systemPrompt !== originalPrompt) result.systemPrompt = applied.systemPrompt;
-    if (applied.message) result.message = applied.message;
-    if (result.systemPrompt !== undefined || result.message !== undefined) return result;
+  function appliedResult(applied: { message?: InjectedMessage }): { message: InjectedMessage } | void {
+    if (applied.message) return { message: applied.message };
   }
 }

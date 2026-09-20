@@ -452,11 +452,12 @@ export default function contextIncludeExtension(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event) => {
-    const { systemPrompt, systemPromptOptions } = event;
+    const { systemPromptOptions } = event;
     const contextFiles = systemPromptOptions.contextFiles;
 
     if (!contextFiles || contextFiles.length === 0) {
       _lastScan = null;
+      delete systemPromptOptions.sections.context_include;
       return;
     }
 
@@ -506,6 +507,7 @@ export default function contextIncludeExtension(pi: ExtensionAPI) {
 
     if (state.results.length === 0) {
       _lastScan = diag;
+      delete systemPromptOptions.sections.context_include;
       return;
     }
 
@@ -520,11 +522,8 @@ export default function contextIncludeExtension(pi: ExtensionAPI) {
     diag.totalBytes = state.accumulatedBytes;
     _lastScan = diag;
 
-    const injected = `\n\nAdditional files included via @-syntax references in the project instructions:\n\n${sections.join("\n\n")}\n`;
-
-    return {
-      systemPrompt: (systemPrompt ?? "") + injected,
-    };
+    systemPromptOptions.sections.context_include =
+      `Additional files included via @-syntax references in the project instructions:\n\n${sections.join("\n\n")}`;
   });
 }
 

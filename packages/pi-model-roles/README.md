@@ -6,6 +6,8 @@ Give pi's background sub-tasks — naming sessions, routing, side agents — the
 
 Named **roles** (`heavy`, `fast`, `utility`, …) each map to a model + thinking level. Other pi extensions ask model-roles "which model fits this job?" and get the right one back, auth already resolved.
 
+Requires pi 0.86.0 or newer. Model calls use pi's configured provider registry, including providers registered by extensions.
+
 ## Why roles
 
 Without model-roles, every background task either hardcodes its own model (inflexible) or piggybacks on your active model (a throwaway "title this session" call burns your premium budget). Roles centralize the decision: declare once in settings, every consumer respects it. Cheap jobs route to cheap models; deep-thinking jobs get the strong model.

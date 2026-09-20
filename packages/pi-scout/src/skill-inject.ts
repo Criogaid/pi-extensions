@@ -1,20 +1,12 @@
 /**
  * Cache-friendly skill injection.
  *
- * Prompt caches (Anthropic cache_control, OpenAI/DeepSeek/GLM automatic
- * prefix caching) all match on an exact request prefix: tools → system →
- * messages. Any byte changed in the system prompt invalidates the cache for
- * the entire conversation history that follows it. Per-turn system-prompt
- * editing is therefore the most expensive place to put dynamic content.
- *
- * Scout's design keeps the system prompt byte-stable across turns:
- *
- * - `stripSkillsSection` removes pi's default skills section — the same
- *   deterministic edit every turn, so the system prompt is identical from
- *   the second scout turn onward (one-time divergence vs. the pi baseline).
- * - `buildSkillsInjection` renders the turn's selected skills as a custom
- *   message appended after the user prompt. Injections are history: they
- *   never mutate earlier bytes, so the cached prefix keeps growing.
+ * Pi builds its default skills section from systemPromptOptions.skills.
+ * The skill router clears that input for the current turn, leaving other
+ * structured prompt sections unchanged.
+ * `buildSkillsInjection` renders the turn's selected skills as a custom
+ * message appended after the user prompt. Injections are history: they
+ * never mutate earlier bytes, so the cached prefix keeps growing.
  *
  * Description caching: a skill's description is included only the first
  * time it is injected in a given context (session or post-compaction);
@@ -24,10 +16,6 @@
  */
 
 import type { InjectedMessage, SkillEntry } from "./types.ts";
-
-/** Match pi's entire skills section: intro paragraph + XML block. */
-const SKILLS_SECTION_RE =
-  /\n\nThe following skills provide specialized instructions[\s\S]*?<\/available_skills>/;
 
 /** Custom type identifying scout's per-turn skill injections. */
 const INJECTION_CUSTOM_TYPE = "scout-skills";
@@ -65,23 +53,6 @@ export function toSkillEntries(
     filePath: s.filePath,
     ...(s.disableModelInvocation ? { userOnly: true } : {}),
   }));
-}
-
-/**
- * Remove pi's default skills section from the system prompt.
- *
- * Called on every turn while skill-router is enabled, so it must be a
- * deterministic function of its input: same input → same output, and after
- * the first application the output no longer contains the section (idempotent
- * in practice, since pi rebuilds the base prompt — with the original section —
- * fresh each turn). A stable system prompt is what keeps the tools + system
- * prefix cacheable for the whole session.
- *
- * @param systemPrompt - Full system prompt
- * @returns System prompt without the skills section
- */
-export function stripSkillsSection(systemPrompt: string): string {
-  return systemPrompt.replace(SKILLS_SECTION_RE, "");
 }
 
 /**

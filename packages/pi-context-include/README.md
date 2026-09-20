@@ -4,6 +4,8 @@
 
 `@path` syntax for AGENTS.md — include files by reference.
 
+Requires pi 0.86.0 or newer.
+
 ## Features
 
 - **Line-start only**: `@path` sits at the start of a line, optionally after a Markdown list marker (`-`, `*`, `+`, or `1.`) — prevents false positives from emails/code
@@ -47,7 +49,7 @@ In any AGENTS.md file:
 @~/.pi/agent/includes/team-conventions.md
 ```
 
-On each turn, the extension reads the referenced files and injects their content into the system prompt.
+On each turn, the extension reads the referenced files and updates its own system-prompt section. Pi can preserve unchanged prompt sections across turns.
 
 **Important:** `@path` must be at the start of a line, optionally after a Markdown list marker (`-`/`*`/`+`/`1.`). It will not be recognized mid-sentence or inside code blocks.
 
@@ -78,8 +80,8 @@ session start — run `/reload` or restart pi after editing.
 
 ### Path safety fence
 
-Included files are injected into the system prompt inside pi's high-trust
-`<project_instructions>` tag, so an accidental `@secrets.json` or
+Included files appear in the system prompt as `<project_instructions>` entries
+within a `<context_include>` section, so an accidental `@secrets.json` or
 `@../sibling/secret.md` would leak secrets on every turn. Includes are
 therefore confined to an **allow-set of roots**, with a **deny-set** that
 always wins:

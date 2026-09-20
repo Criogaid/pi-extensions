@@ -6,20 +6,6 @@
  * Exported functions provide type-safe access — consumers never touch globalThis.
  */
 
-// NOTE: imported from `@earendil-works/pi-ai/compat`, not the package root.
-// In pi-ai 0.80+, the top-level `streamSimple`/`completeSimple` standalone
-// functions were removed; the "new" API lives as methods on a `Models` instance
-// (`createModels().streamSimple(...)`). But that instance needs credentials +
-// provider registration that we can't assemble here — pi core hands extensions a
-// `ModelRegistry`, not a `Models`, and does not expose its internal provider set.
-// `/compat` preserves the registry-dispatched standalone functions with the same
-// `(model, context, options)` signature. This is the sanctioned path: pi core
-// itself imports from `/compat` (sdk.ts, agent-session.ts, model-registry.ts).
-// Migrate to a `Models` instance only once pi exposes one to extensions.
-import {
-  completeSimple as piAiCompleteSimple,
-  streamSimple as piAiStreamSimple,
-} from "@earendil-works/pi-ai/compat";
 import type { ModelRolesAPI, ModelRolesConfig, RoleConfig, ResolvedRole } from "./types.ts";
 import { loadRolesConfig } from "./config.ts";
 import { resolveModelForRole, resolveModelForRoleAsync } from "./resolver.ts";
@@ -141,61 +127,40 @@ export function initModelRolesAPI(
     },
 
     async completeWithRole(roleName: string, context: any, options?: any): Promise<any> {
-      // Resolve model: explicit override wins, else the role's declared model
-      // (model=null transparently uses pi's current model).
-      const roleConfig = getEffectiveRoleConfig(roleName);
-      const model =
-        options?.model ??
-        resolveModelForRole(roleConfig, state.modelRegistry, state.currentModel).model;
-      if (!model) {
-        throw new Error(`completeWithRole: role "${roleName}" has no available model`);
-      }
-      // Resolve auth for the model actually used (refreshes OAuth tokens).
-      const auth = await state.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) {
-        throw new Error(
-          `completeWithRole: auth failed for ${model.provider}/${model.id}: ${auth.error}`,
-        );
-      }
-      // Forward everything except `model` to pi-ai's completeSimple().
-      // completeSimple goes through streamSimpleOpenAICompletions which
-      // properly clamps thinking levels ("off" → undefined → disabled).
-      const { model: _omitModel, ...streamOptions } = options ?? {};
-      if (auth.apiKey) streamOptions.apiKey = auth.apiKey;
-      if (auth.headers) streamOptions.headers = auth.headers;
-      // Map role.thinking → options.reasoning (streamSimple field name).
-      if (roleConfig.thinking && streamOptions.reasoning === undefined) {
-        streamOptions.reasoning = roleConfig.thinking;
-      }
-      return piAiCompleteSimple(model, context, streamOptions);
+      const { model, streamOptions } = await prepareRequest("completeWithRole", roleName, options);
+      return state.modelRegistry.streamSimple(model, context, streamOptions).result();
     },
 
     async streamWithRole(roleName: string, context: any, options?: any): Promise<any> {
-      const roleConfig = getEffectiveRoleConfig(roleName);
-      const model =
-        options?.model ??
-        resolveModelForRole(roleConfig, state.modelRegistry, state.currentModel).model;
-      if (!model) {
-        throw new Error(`streamWithRole: role "${roleName}" has no available model`);
-      }
-      const auth = await state.modelRegistry.getApiKeyAndHeaders(model);
-      if (!auth.ok) {
-        throw new Error(
-          `streamWithRole: auth failed for ${model.provider}/${model.id}: ${auth.error}`,
-        );
-      }
-      const { model: _omitModel, ...streamOptions } = options ?? {};
-      if (auth.apiKey) streamOptions.apiKey = auth.apiKey;
-      if (auth.headers) streamOptions.headers = auth.headers;
-      // Apply the role's thinking level unless the caller explicitly overrides it.
-      // streamSimpleOpenAICompletions handles "off" correctly (converts to
-      // undefined → disabled), so all levels pass through as-is.
-      if (roleConfig.thinking && streamOptions.reasoning === undefined) {
-        streamOptions.reasoning = roleConfig.thinking;
-      }
-      return piAiStreamSimple(model, context, streamOptions);
+      const { model, streamOptions } = await prepareRequest("streamWithRole", roleName, options);
+      return state.modelRegistry.streamSimple(model, context, streamOptions);
     },
   };
+
+  async function prepareRequest(operation: string, roleName: string, options?: any) {
+    const roleConfig = getEffectiveRoleConfig(roleName);
+    const model =
+      options?.model ??
+      resolveModelForRole(roleConfig, state.modelRegistry, state.currentModel).model;
+    if (!model) {
+      throw new Error(`${operation}: role "${roleName}" has no available model`);
+    }
+    // Preserve the public API's rejection on auth failure. Registry streams
+    // otherwise report setup failures through their event stream.
+    const auth = await state.modelRegistry.getApiKeyAndHeaders(model);
+    if (!auth.ok) {
+      throw new Error(
+        `${operation}: auth failed for ${model.provider}/${model.id}: ${auth.error}`,
+      );
+    }
+    const { model: _omitModel, ...streamOptions } = options ?? {};
+    if (auth.apiKey) streamOptions.apiKey = auth.apiKey;
+    if (auth.headers) streamOptions.headers = auth.headers;
+    if (roleConfig.thinking && streamOptions.reasoning === undefined) {
+      streamOptions.reasoning = roleConfig.thinking;
+    }
+    return { model, streamOptions };
+  }
 
   // Store on globalThis — survives module identity mismatches
   (globalThis as any)[GLOBAL_KEY] = api;
