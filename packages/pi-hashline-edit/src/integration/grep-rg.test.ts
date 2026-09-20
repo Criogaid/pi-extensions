@@ -46,7 +46,7 @@ test("real rg emits anchored matches from a temporary directory", {
   }
 });
 
-test("real rg and line filters share case and Unicode semantics", {
+test("real rg and line filters honor explicit case settings and Unicode folding", {
   skip: rgPath === null,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "hl-grep-case-"));
@@ -58,7 +58,7 @@ test("real rg and line filters share case and Unicode semantics", {
         throw new Error("integration test must not invoke the built-in grep delegate");
       },
     });
-    for (const ignoreCase of [undefined, true, false]) {
+    for (const ignoreCase of [undefined, false, true]) {
       const expectedCount = ignoreCase === true ? 3 : 2;
       for (const query of [
         { pattern: "foo\\S*" },
@@ -75,21 +75,26 @@ test("real rg and line filters share case and Unicode semantics", {
       assert.ok(excluded.content[0].text.includes(ignoreCase === true ? "FOO abc" : "foo BAR"));
     }
     const unicodeAll: any = await tool.execute("0", {
-      pattern: ["k", "zip"], matchMode: "all",
+      pattern: ["k", "zip"], matchMode: "all", ignoreCase: true,
     }, undefined, undefined);
     assert.match(unicodeAll.content[0].text, /fixture\.ts · 2 matches/);
     assert.ok(unicodeAll.content[0].text.includes("K zip"));
 
     const unicodeExcluded: any = await tool.execute("0", {
-      pattern: "zip", excludePattern: "k",
+      pattern: "zip", excludePattern: "k", ignoreCase: true,
     }, undefined, undefined);
     assert.equal(unicodeExcluded.content[0].text, "No matches found");
+    const caseSensitive: any = await tool.execute("0", {
+      pattern: "zip", excludePattern: "k",
+    }, undefined, undefined);
+    assert.match(caseSensitive.content[0].text, /│K zip/);
+    assert.doesNotMatch(caseSensitive.content[0].text, /│k zip/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("real rg validates its own regex syntax and limits automatic literal fallback", {
+test("real rg searches regex by default and rejects invalid patterns", {
   skip: rgPath === null,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "hl-grep-regex-"));
@@ -104,28 +109,21 @@ test("real rg validates its own regex syntax and limits automatic literal fallba
     for (const pattern of ["(?i)^foo$", "(?P<name>foo)$"]) {
       const result: any = await tool.execute("0", { pattern }, undefined, undefined);
       assert.match(result.content[0].text, /│foo/);
-      assert.doesNotMatch(result.content[0].text, /Invalid regex/);
     }
     for (const pattern of ["queueTool(", "foo(?=bar)"]) {
-      const result: any = await tool.execute("0", { pattern }, undefined, undefined);
-      assert.ok(result.content[0].text.includes(`│${pattern}`));
-      assert.match(result.content[0].text, /Invalid regex; searched all patterns as literal text/);
       await assert.rejects(
-        tool.execute("0", { pattern, literal: false }, undefined, undefined),
+        tool.execute("0", { pattern }, undefined, undefined),
         /regex parse error/,
       );
     }
-    const missing: any = await tool.execute("0", { pattern: "missing(" }, undefined, undefined);
-    assert.match(missing.content[0].text, /No matches found\n\n\[Invalid regex/);
     const explicit: any = await tool.execute("0", { pattern: "queueTool(", literal: true }, undefined, undefined);
     assert.match(explicit.content[0].text, /│queueTool\(/);
-    assert.doesNotMatch(explicit.content[0].text, /Invalid regex/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test("fallback forwarding preserves query semantics with a real rg-backed delegate", {
+test("fallback forwards search settings unchanged to an rg-backed delegate", {
   skip: rgPath === null,
 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), "hl-grep-fallback-"));
@@ -139,18 +137,15 @@ test("fallback forwarding preserves query semantics with a real rg-backed delega
       findRg: async () => null,
       delegate: (...args) => delegate.execute(...args),
     });
-    for (const pattern of ["foo", "(?i)^foo$", "(?P<name>foo)$", "queueTool("]) {
+    for (const pattern of ["foo", "(?i)^foo$", "(?P<name>foo)$"]) {
       const result: any = await fallback.execute("0", { pattern }, undefined, undefined);
-      const output = result.content.map((block: any) => block.text).join("\n");
-      if (pattern === "queueTool(") {
-        assert.match(output, /│queueTool\(/);
-        assert.match(output, /Invalid regex; searched all patterns as literal text/);
-      } else {
-        assert.match(output, /│foo/);
-        assert.equal(output.includes("│FOO"), !pattern.includes("?P"));
-        assert.doesNotMatch(output, /Invalid regex/);
-      }
+      const output = result.content[0].text;
+      assert.match(output, /│foo/);
+      assert.equal(output.includes("│FOO"), pattern.includes("?i"));
     }
+    await assert.rejects(fallback.execute("0", { pattern: "queueTool(" }, undefined, undefined), /regex parse error/);
+    const literal: any = await fallback.execute("0", { pattern: "queueTool(", literal: true }, undefined, undefined);
+    assert.match(literal.content[0].text, /│queueTool\(/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

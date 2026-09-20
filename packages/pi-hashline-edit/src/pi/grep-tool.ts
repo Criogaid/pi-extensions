@@ -78,34 +78,6 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-const REGEX_SYNTAX = /[.*+?^${}()|[\]\\]/;
-const REGEX_PARSE_ERROR = /^(?:rg: )?regex parse error:/m;
-const LITERAL_FALLBACK_NOTICE = "Invalid regex; searched all patterns as literal text";
-
-async function resolveLiteralMode(
-  patterns: readonly string[],
-  explicit: boolean | undefined,
-  rgPath: string,
-  backend: GrepBackend,
-  signal: AbortSignal | undefined,
-): Promise<boolean> {
-  if (explicit !== undefined) return explicit;
-  if (!patterns.some((pattern) => REGEX_SYNTAX.test(pattern))) return true;
-  // Validate with rg's parser against empty stdin, without scanning any files.
-  const result = await backend.runRg(
-    rgPath, ["--quiet", ...patterns.flatMap((pattern) => ["-e", pattern]), "--", "-"],
-    signal, () => true,
-  );
-  if (signal?.aborted) throw new Error("Operation aborted");
-  if (result.code === 0 || result.code === 1) return false;
-  if (result.code === 2 && REGEX_PARSE_ERROR.test(result.stderr)) return true;
-  throw new Error(result.stderr.trim() || `ripgrep exited with code ${result.code}`);
-}
-
-function resolveMatcherIgnoreCase(patterns: readonly string[], explicit: boolean | undefined): boolean {
-  return explicit ?? patterns.every((pattern) => pattern === pattern.toLowerCase());
-}
-
 /**
  * Compile a pattern for the client-side line checks (`matchMode: "all"` and
  * `excludePattern`), mirroring the flags rg was given — `literal`,
@@ -138,7 +110,7 @@ function toArray(v: string | string[] | undefined): string[] {
 const grepOverrideSchema = Type.Object({
   pattern: Type.Union([Type.String(), Type.Array(Type.String())], {
     description:
-      "Non-empty pattern(s). Arrays use matchMode.",
+      "Regex pattern, or literal text with literal:true. String or array; arrays combine per matchMode.",
   }),
   matchMode: Type.Optional(
     Type.Union([Type.Literal("any"), Type.Literal("all")], {
@@ -148,7 +120,7 @@ const grepOverrideSchema = Type.Object({
   ),
   excludePattern: Type.Optional(
     Type.Union([Type.String(), Type.Array(Type.String())], {
-      description: "Drop lines matching any exclusion after pattern matching.",
+      description: "Drop lines matching any exclusion after pattern matching; uses the same literal and ignoreCase settings.",
     }),
   ),
   outputMode: Type.Optional(
@@ -156,7 +128,7 @@ const grepOverrideSchema = Type.Object({
       description: '"content" (default): anchored lines. "files": paths. "count": matching lines per file and total.',
     }),
   ),
-  wordMatch: Type.Optional(Type.Boolean({ description: "Whole words in pattern only (rg -w)" })),
+  wordMatch: Type.Optional(Type.Boolean({ description: "Match whole words only (rg -w)" })),
   path: Type.Union([Type.String(), Type.Array(Type.String())], {
     description:
       "Directory or file to search (string or array of paths; default: current directory)",
@@ -165,11 +137,11 @@ const grepOverrideSchema = Type.Object({
     Type.String({ description: "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'" }),
   ),
   ignoreCase: Type.Optional(
-    Type.Boolean({ description: "true: ignore case; false: match case. Default: ignore case if no string in pattern contains uppercase (escapes count). Applies to exclusions too." }),
+    Type.Boolean({ description: "Case-insensitive search (default: false); applies to pattern and excludePattern." }),
   ),
   literal: Type.Optional(
     Type.Boolean({
-      description: "true: literal; false: regex, no fallback. Shared by pattern/excludePattern. Default: literal unless any pattern has regex syntax; any rg parse failure makes all literal. AND/exclude regexes must also compile in JS.",
+      description: "Treat pattern and excludePattern as literal text (default: false; regex). Invalid regexes return an error.",
     }),
   ),
   context: Type.Optional(
@@ -331,12 +303,12 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
     name: "grep" as const,
     label: "grep",
     description:
-      "Search file contents; respects .gitignore. Groups matches by file with LINE#HASH anchors, including context. Native fallback has no anchors.",
-    promptSnippet: "Search file contents",
+      "Search file contents, respecting .gitignore. Content results are grouped by file and include LINE#HASH anchors usable in edit; built-in grep fallback results have no anchors.",
+    promptSnippet: "Search file contents with edit-ready line anchors",
     promptGuidelines: [
       "Prefer the grep tool for file-content searches.",
-      "Use returned grep anchors directly for edits; no re-read needed.",
-      "Prefer files/count for paths/counts; use all/exclude instead of shell pipelines.",
+      "Use returned LINE#HASH anchors directly in edit when present; no re-read is needed.",
+      'Use outputMode:"files"/"count" when only paths or counts are needed; use matchMode:"all" and excludePattern for line-level filters instead of shell pipelines.',
     ],
     parameters: grepOverrideSchema,
 
@@ -412,26 +384,7 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
       const rgPath = await backend.findRg();
       // ripgrep unavailable → built-in (it can auto-download rg), but only for plain params
       if (!rgPath) {
-        if (legacyShaped) {
-          const forwarded = {
-            ...params,
-            ignoreCase: resolveMatcherIgnoreCase(patterns, params.ignoreCase),
-            literal: params.literal ?? !REGEX_SYNTAX.test(params.pattern),
-          };
-          try {
-            return await backend.delegate(toolCallId, forwarded, signal, onUpdate);
-          } catch (error) {
-            if (signal?.aborted) throw new Error("Operation aborted");
-            const message = error instanceof Error ? error.message : String(error);
-            if (params.literal !== undefined || forwarded.literal || !REGEX_PARSE_ERROR.test(message)) throw error;
-            // Let the native rg parser decide whether automatic mode needs a literal retry.
-            const result = await backend.delegate(toolCallId, { ...forwarded, literal: true }, signal, onUpdate);
-            return {
-              ...result,
-              content: [...result.content, { type: "text", text: `[${LITERAL_FALLBACK_NOTICE}]` }],
-            };
-          }
-        }
+        if (legacyShaped) return backend.delegate(toolCallId, params, signal, onUpdate);
         throw new Error(
           "ripgrep (rg) not found; extended grep params cannot fall back to the built-in grep. Retry with a simple pattern first, or use bash",
         );
@@ -440,12 +393,7 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
       const excludes = toArray(params.excludePattern);
       const matchMode: "any" | "all" = params.matchMode ?? "any";
       const outputMode: "content" | "files" | "count" = params.outputMode ?? "content";
-      const allPatterns = [...patterns, ...excludes];
-      const literal = await resolveLiteralMode(allPatterns, params.literal, rgPath, backend, signal);
-      const literalFallback = params.literal === undefined && literal &&
-        allPatterns.some((pattern) => REGEX_SYNTAX.test(pattern));
-      const { glob, ignoreCase, wordMatch, context, limit } = params;
-      const matcherIgnoreCase = resolveMatcherIgnoreCase(patterns, ignoreCase);
+      const { glob, ignoreCase, literal, wordMatch, context, limit } = params;
       const ctx = context && context > 0 ? context : 0;
       const searchPaths = (() => {
         const raw = toArray(params.path);
@@ -465,14 +413,14 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
 
       // Client-side line filters — only AND / exclude need them; "any" is native rg (-e OR).
       const excludeMatchers = excludes.map((p) =>
-        compileLineMatcher(p, { literal, ignoreCase: matcherIgnoreCase, word: false }),
+        compileLineMatcher(p, { literal: !!literal, ignoreCase: !!ignoreCase, word: false }),
       );
       const andMatchers =
         matchMode === "all" && patterns.length > 1
           ? patterns.map((p) =>
               compileLineMatcher(p, {
-                literal,
-                ignoreCase: matcherIgnoreCase,
+                literal: !!literal,
+                ignoreCase: !!ignoreCase,
                 word: !!wordMatch,
               }),
             )
@@ -487,8 +435,7 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
         }
 
         const args = ["--json", "--line-number", "--color=never", "--hidden"];
-        // Use the same raw-pattern case decision for rg and client-side filters.
-        args.push(matcherIgnoreCase ? "--ignore-case" : "--case-sensitive");
+        if (ignoreCase) args.push("--ignore-case");
         if (literal) args.push("--fixed-strings");
         if (wordMatch) args.push("--word-regexp");
         if (glob) args.push("--glob", glob);
@@ -537,8 +484,7 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
             }
             if (raw.length === 0) {
               resolvePromise({
-                content: [{ type: "text" as const, text: literalFallback
-                  ? `No matches found\n\n[${LITERAL_FALLBACK_NOTICE}]` : "No matches found" }],
+                content: [{ type: "text", text: "No matches found" }],
                 details: undefined,
               });
               return;
@@ -619,7 +565,7 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
             const truncation = truncateHead(output, { maxBytes: DEFAULT_MAX_BYTES });
             output = truncation.content;
 
-            const notices: string[] = literalFallback ? [LITERAL_FALLBACK_NOTICE] : [];
+            const notices: string[] = [];
             if (matchLimitReached)
               notices.push(
                 `${effectiveLimit} matches limit reached. Use limit=${effectiveLimit * 2} for more, or refine pattern`,
