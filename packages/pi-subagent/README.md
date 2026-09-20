@@ -68,6 +68,8 @@ Observations on how main models behave with this plugin, one family per subsecti
 | `/subagent:doctor` | Diagnose pi invocation, model-role resolution, configuration, and role references |
 | `/subagent:status` | List background runs and their current state |
 | `/subagent:cancel <id\|all> [reason]` | Cancel a live background run (or every live run); the optional reason is recorded with the run |
+| `/subagent:avail [role] [on\|off [duration] [reason]]` | Situational role availability (see [Role availability](#role-availability)) — bare shows the overview; `/subagent:avail reviewer off 6h quota exhausted` disables a role until its TTL lapses or it is turned back on |
+| `/subagent:avail` | Show every role's availability state and the state file location |
 
 ### Live view (`/subagent:view`)
 
@@ -180,6 +182,24 @@ Configuring both on the same role is an error — the role is skipped with an er
 **Optional fields:** `subagentRoles` (roles this role can spawn via delegate; absent means any available role, mirroring the `tools` default — declare it explicitly when a restricted role grants `subagent_delegate`), `timeout` (per-role active-time timeout in seconds; unset or `0` is unlimited, negative values normalize to `0`), `maxTurns` / `maxCost` (per-role budget overrides; unset uses the top-level `maxTurns` / `maxCost` setting, `0` is unlimited, negative values normalize to `0`), `fallbackRole` (backup pi-model-roles role the whole run is retried on after a provider error; unset means no retry — see [Fallback observability](#fallback-observability)).
 
 Invalid custom roles (missing required fields) are skipped with an error notification at session start.
+
+## Role availability
+
+Roles can be switched off at runtime without touching configuration — the situational counterpart to `agentOverrides.<role>.disabled`. Where `disabled: true` is a permanent settings statement ("this role should not exist"), an availability disable is a temporary, reason-carrying OFF switch: quota exhausted on the role's model, a provider outage, or a task the role is wrong for.
+
+One parameterized command covers every role (custom role names can never collide with the other `/subagent:*` commands):
+
+```
+/subagent:avail                               # overview of all disables
+/subagent:avail reviewer                      # show one role's state
+/subagent:avail reviewer off quota exhausted  # until manually re-enabled
+/subagent:avail reviewer off 6h quota exhausted   # auto re-enables after 6h
+/subagent:avail reviewer on                   # re-enable (manual override of TTL)
+```
+
+The model is told through the same `context`-event reminder channel as the background-run inbox: a byte-stable `[subagent availability]` block naming the OFFLINE roles (with reason and absolute reset time) is injected before every provider call while anything is disabled, and disappears when everything is back online. Delegation itself is never blocked — the reminder is information, and the model steers itself away from OFFLINE roles. A TTL lapse takes effect on the next request, the same way.
+
+State persists to `~/.pi/subagent/availability.json` and survives restarts. The file is re-read on every reminder build and command, so external edits and sibling pi instances take effect without a reload.
 
 ## Usage (by the main model)
 

@@ -6,6 +6,8 @@ Every skill you install in pi gets advertised in the system prompt on every turn
 
 Scout runs a cheap side model **before each turn** to look at what you just asked and decide what the main model actually needs this turn: which skills are relevant, whether the task calls for a heavier or lighter model. The main model then starts with a focused prompt instead of the full skill dump.
 
+Requires pi 0.86.0 or newer.
+
 ## What scout does
 
 Three independent modules — toggle each one separately.
@@ -119,10 +121,10 @@ A trivial acknowledgment is a short prompt that is *entirely* an ack — matched
 
 ### Prompt cache design
 
-LLM prompt caches match on an exact request prefix (`tools → system → messages`): change one byte of the system prompt and the cache for the entire conversation history after it is gone. Scout is built around that constraint:
+LLM prompt caches match on an exact request prefix. Replacing the entire system prompt can invalidate the cached conversation prefix; pi 0.86.0 can instead record section changes in the transcript on supported models. Scout uses that mechanism:
 
-- **The system prompt stays byte-stable.** While skill-router is enabled, scout strips pi's skills section with the same deterministic edit every turn, so from the second turn on the system prompt never changes — the `tools + system` prefix caches once for the whole session.
-- **Selected skills ride in messages, not the system prompt.** Each turn's selection is appended after the user prompt as a custom message. Injections are history: append-only bytes never invalidate the cached prefix, so each turn only pays full price for its own small block.
+- **The default skills section is omitted structurally.** While skill-router is enabled, scout clears the per-turn skill list used to build that section. Pi records the change as a section update instead of replacing the entire system prompt. Other prompt sections keep their cached prefix on models that support mid-conversation system messages.
+- **Selected skills ride in messages, not the system prompt.** Each turn's selection is appended after the user prompt as a custom message. These additions leave earlier conversation content unchanged.
 - **Descriptions appear once.** A skill's description is injected the first time it is selected; later selections reference it with a one-line entry, since the description already sits in cached history. After a compaction (which summarizes that history away) scout re-describes on the next injection.
 - **Model switches remain the one cache cost.** Prompt caches are per-model, so a model-router switch re-warms the target model's cache — one reason model-router is off by default.
 

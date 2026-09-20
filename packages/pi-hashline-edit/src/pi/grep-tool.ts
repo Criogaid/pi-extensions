@@ -52,6 +52,7 @@ import { parseHashline } from "./render.ts";
 const DEFAULT_LIMIT = 100;
 /** Max chars per result line for display (mirrors pi's truncate.ts; not exported there). */
 const GREP_MAX_LINE_LENGTH = 500;
+const GREP_CONTEXT_MAX = 20;
 
 /** Locate ripgrep: pi's bundled bin first, then PATH. Returns null if not found. */
 async function findRg(): Promise<string | null> {
@@ -91,7 +92,7 @@ function compileLineMatcher(
 ): RegExp {
   let source = opts.literal ? escapeRegex(pattern) : pattern;
   if (opts.word) source = `\\b(?:${source})\\b`;
-  const flags = opts.ignoreCase ? "i" : "";
+  const flags = opts.ignoreCase ? "iu" : "u";
   try {
     return new RegExp(source, flags);
   } catch (err) {
@@ -107,51 +108,55 @@ function toArray(v: string | string[] | undefined): string[] {
   return Array.isArray(v) ? v : [v];
 }
 
+function clampContext(context: number | undefined): number {
+  if (!context || !Number.isFinite(context) || context < 0) return 0;
+  return Math.min(Math.floor(context), GREP_CONTEXT_MAX);
+}
+
 const grepOverrideSchema = Type.Object({
   pattern: Type.Union([Type.String(), Type.Array(Type.String())], {
     description:
-      "Search pattern (regex, or literal with literal:true). String or array; an array combines patterns per matchMode (any = OR, all = AND on the same line)",
+      "Regex pattern, or literal text with literal:true. String or array; arrays combine per matchMode.",
   }),
   matchMode: Type.Optional(
     Type.Union([Type.Literal("any"), Type.Literal("all")], {
       description:
-        'How multiple patterns combine (default "any"). "any": line matches at least one pattern. "all": line must match every pattern — equivalent to `grep A | grep B`',
+        '"any" (default): OR. "all": AND on the same line.',
     }),
   ),
   excludePattern: Type.Optional(
     Type.Union([Type.String(), Type.Array(Type.String())], {
-      description:
-        "Drop lines matching this pattern, like grep -v (string or array; same regex/literal/ignoreCase settings as pattern). Applied after pattern matching",
+      description: "Drop lines matching any exclusion after pattern matching; uses the same literal and ignoreCase settings.",
     }),
   ),
   outputMode: Type.Optional(
     Type.Union([Type.Literal("content"), Type.Literal("files"), Type.Literal("count")], {
-      description:
-        'Output shape (default "content"). "content": anchored matching lines. "files": only file paths with matches (rg -l). "count": per-file match counts + total (grep -c)',
+      description: '"content" (default): anchored lines. "files": paths. "count": matching lines per file and total.',
     }),
   ),
   wordMatch: Type.Optional(Type.Boolean({ description: "Match whole words only (rg -w)" })),
-  path: Type.Union([Type.String(), Type.Array(Type.String())], {
+  path: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())], {
     description:
       "Directory or file to search (string or array of paths; default: current directory)",
-  }),
+  })),
   glob: Type.Optional(
     Type.Union([Type.String(), Type.Array(Type.String())], {
       description: "Filter files by glob pattern; pass an array for multiple filters and prefix exclusions with `!`, e.g. ['*.ts', '!**/*.test.ts']",
     }),
   ),
   ignoreCase: Type.Optional(
-    Type.Boolean({ description: "Case-insensitive search (default: false)" }),
+    Type.Boolean({ description: "Case-insensitive search (default: false); applies to pattern and excludePattern." }),
   ),
   literal: Type.Optional(
     Type.Boolean({
-      description: "Treat pattern as literal string instead of regex (default: false)",
+      description: "Treat pattern and excludePattern as literal text (default: false; regex). Invalid regexes return an error.",
     }),
   ),
   context: Type.Optional(
-    Type.Number({
-      description:
-        "Number of lines to show before and after each match (default: 0); context lines are anchored too",
+    Type.Integer({
+      minimum: 0,
+      maximum: GREP_CONTEXT_MAX,
+      description: `Number of lines on each side of a match (0-${GREP_CONTEXT_MAX}; default: 0); context lines are anchored too`,
     }),
   ),
   limit: Type.Optional(
@@ -307,14 +312,12 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
     name: "grep" as const,
     label: "grep",
     description:
-      "Search file contents for a pattern. Results are grouped by file with LINE#HASH anchors usable directly in edit. Supports multi-pattern AND (matchMode:all), line exclusion (excludePattern, grep -v), whole-word matching (wordMatch), multiple search paths, and files-only / count output modes — the common `grep A | grep -v B` / `rg -l` / `grep -c` pipelines without bash. Respects .gitignore.",
-    promptSnippet:
-      "Search file contents; results show LINE#HASH anchors usable directly in edit; multi-pattern AND, exclude, files-only and count modes replace bash grep pipelines",
+      "Search file contents, respecting .gitignore. Content results are grouped by file and include LINE#HASH anchors usable in edit; built-in grep fallback results have no anchors.",
+    promptSnippet: "Search file contents with edit-ready line anchors",
     promptGuidelines: [
-      "Results are grouped by file under a `path · N matches` header; each line shows `LINE#HASH│content` (same format as read).",
-      "Copy `LINE#HASH` straight into an edit `anchor`/`end` — no re-read needed. Context lines (from `context`) are anchored and editable too.",
-      'Prefer this over bash pipes: `matchMode:"all"` + `excludePattern` express `grep A | grep -v B`; `outputMode:"files"`/`"count"` replace `rg -l`/`grep -c` when you only need locations or counts. `files` output pastes back as a `path` array.',
-      "Pass `pattern` (string or array); optionally `path` (string or array), `glob`, `ignoreCase`, `literal`, `wordMatch`, `context` (lines before+after each match), `limit` (max matches, default 100).",
+      "Prefer the grep tool for file-content searches.",
+      "Use returned LINE#HASH anchors directly in edit when present; no re-read is needed.",
+      'Use outputMode:"files"/"count" when only paths or counts are needed; use matchMode:"all" and excludePattern for line-level filters instead of shell pipelines.',
     ],
     parameters: grepOverrideSchema,
 
@@ -371,8 +374,13 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
       onUpdate: any,
     ): Promise<any> {
       const state = getState();
+      const ctx = clampContext(params.context);
+      const delegatedParams = params.context === undefined ? params : { ...params, context: ctx };
       // aborted → built-in grep (it handles abort itself)
-      if (signal?.aborted) return backend.delegate(toolCallId, params, signal, onUpdate);
+      if (signal?.aborted) return backend.delegate(toolCallId, delegatedParams, signal, onUpdate);
+
+      const patterns = toArray(params.pattern);
+      if (patterns.length === 0) throw new Error("pattern is required (got an empty array)");
 
       // Plain built-in-shaped params (single string pattern/path, no new fields)
       // can delegate safely; anything else must run the local pipeline below.
@@ -388,20 +396,17 @@ export function makeGrepOverrideWithBackend(cwd: string, overrides: Partial<Grep
       const rgPath = await backend.findRg();
       // ripgrep unavailable → built-in (it can auto-download rg), but only for plain params
       if (!rgPath) {
-        if (legacyShaped) return backend.delegate(toolCallId, params, signal, onUpdate);
+        if (legacyShaped) return backend.delegate(toolCallId, delegatedParams, signal, onUpdate);
         throw new Error(
           "ripgrep (rg) not found; extended grep params cannot fall back to the built-in grep. Retry with a simple pattern first, or use bash",
         );
       }
 
-      const patterns = toArray(params.pattern);
       const excludes = toArray(params.excludePattern);
-      if (patterns.length === 0) throw new Error("pattern is required (got an empty array)");
       const matchMode: "any" | "all" = params.matchMode ?? "any";
       const outputMode: "content" | "files" | "count" = params.outputMode ?? "content";
       const globs = toArray(params.glob);
-      const { ignoreCase, literal, wordMatch, context, limit } = params;
-      const ctx = context && context > 0 ? context : 0;
+      const { ignoreCase, literal, wordMatch, limit } = params;
       const searchPaths = (() => {
         const raw = toArray(params.path);
         return (raw.length ? raw : ["."]).map((p) => canonicalPath(cwd, p));

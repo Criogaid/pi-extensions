@@ -107,3 +107,72 @@ test("missing configured default role falls back to the built-in default role", 
     },
   );
 });
+
+test("role calls use the registered provider stream with resolved auth and thinking", async () => {
+  const override = { provider: "extension-provider", id: "model" };
+  const context = { systemPrompt: "system", messages: [] };
+  const message = { role: "assistant", content: [{ type: "text", text: "done" }] };
+  const requests: Array<{ model: unknown; context: unknown; options: Record<string, unknown> }> = [];
+  const authModels: unknown[] = [];
+  const modelRegistry = {
+    getAvailable: () => [currentModel, override],
+    async getApiKeyAndHeaders(model: unknown) {
+      authModels.push(model);
+      return { ok: true, apiKey: "registered-key", headers: { "x-provider": "registered" } };
+    },
+    streamSimple(model: unknown, input: unknown, options: Record<string, unknown>) {
+      requests.push({ model, context: input, options });
+      return { result: async () => message };
+    },
+  };
+
+  await withSettings(
+    { modelRoles: { roles: { utility: { model: null, thinking: "off" } } } },
+    async () => {
+      const api = initModelRolesAPI(modelRegistry, currentModel);
+      const stream = await api.streamWithRole("utility", context, { model: override as any, maxTokens: 100 });
+      assert.equal(await stream.result(), message);
+      assert.equal(
+        await api.completeWithRole("utility", context, { model: override as any, reasoning: "high" }),
+        message,
+      );
+    },
+  );
+
+  assert.deepEqual(authModels, [override, override]);
+  assert.deepEqual(requests, [
+    {
+      model: override,
+      context,
+      options: {
+        maxTokens: 100, reasoning: "off", apiKey: "registered-key",
+        headers: { "x-provider": "registered" },
+      },
+    },
+    {
+      model: override,
+      context,
+      options: {
+        reasoning: "high", apiKey: "registered-key",
+        headers: { "x-provider": "registered" },
+      },
+    },
+  ]);
+});
+
+test("role calls reject unavailable auth before returning a stream", async () => {
+  const modelRegistry = {
+    getAvailable: () => [currentModel],
+    async getApiKeyAndHeaders() {
+      return { ok: false, error: "expired" };
+    },
+    streamSimple() {
+      assert.fail("stream must not start after failed authentication");
+    },
+  };
+  await withDefaultConfig(async () => {
+    const api = initModelRolesAPI(modelRegistry, currentModel);
+    await assert.rejects(api.streamWithRole("default", { messages: [] }), /streamWithRole: auth failed.*expired/);
+    await assert.rejects(api.completeWithRole("default", { messages: [] }), /completeWithRole: auth failed.*expired/);
+  });
+});

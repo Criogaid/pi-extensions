@@ -15,7 +15,7 @@ function makeCtx(config: ScoutConfig): ScoutContext {
     rolesApi: { getVisibleRoles: () => ({ default: {} }) } as any,
     skillEntries: [{ name: "skill-a", description: "d", filePath: "/p" }],
     currentRole: "default",
-    systemPrompt: "",
+    systemPromptOptions: { skills: [] },
     theme: { fg: (_c: string, s: string) => s } as any,
   };
 }

@@ -96,7 +96,9 @@ test("formats parsed rg matches with full-line hash anchors", async () => {
         ],
       });
 
-      const result = await call(makeGrepOverrideWithBackend(dir, fake.backend), {
+      const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+      assert.deepEqual(tool.parameters.required, ["pattern"]);
+      const result = await call(tool, {
         pattern: "alpha",
       });
       const output = text(result);
@@ -161,11 +163,16 @@ test("applies all, exclude, context, and CRLF filtering after rg output", async 
         ],
       });
 
-      const result = await call(makeGrepOverrideWithBackend(dir, fake.backend), {
+      const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+      const contextSchema: any = tool.parameters.properties.context;
+      assert.equal(contextSchema.type, "integer");
+      assert.equal(contextSchema.minimum, 0);
+      assert.equal(contextSchema.maximum, 20);
+      const result = await call(tool, {
         pattern: ["alpha", "beta$"],
         matchMode: "all",
         excludePattern: "drop",
-        context: 1,
+        context: 1.9,
       });
       assert.equal(
         text(result),
@@ -180,6 +187,29 @@ test("applies all, exclude, context, and CRLF filtering after rg output", async 
   );
 });
 
+test("context bounds apply to each side of a match, including direct runtime calls", async () => {
+  await withDir(async (dir) => {
+    const file = join(dir, "a.ts");
+    const lines = Array.from({ length: 45 }, (_, i) => i === 22 ? "needle" : `line ${i + 1}`);
+    await writeFile(file, lines.join("\n"));
+    const fake = fakeBackend({ lines: [rgMatch(file, 23, "needle\n")] });
+    const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+
+    for (const context of [20, 1_000]) {
+      const output = text(await call(tool, { pattern: "needle", context })).split("\n");
+      assert.equal(output.length, 42);
+      assert.match(output[1], /^3#[0-9A-Z]+│line 3$/);
+      assert.match(output[21], /^23#[0-9A-Z]+│needle$/);
+      assert.match(output[41], /^43#[0-9A-Z]+│line 43$/);
+    }
+    for (const context of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const output = text(await call(tool, { pattern: "needle", context })).split("\n");
+      assert.equal(output.length, 2);
+      assert.match(output[1], /^23#[0-9A-Z]+│needle$/);
+    }
+  });
+});
+
 test("passes output flags and formats files and counts", async () => {
   await withDir(async (dir) =>
     withEnabled(true, async () => {
@@ -189,7 +219,10 @@ test("passes output flags and formats files and counts", async () => {
       await writeFile(b, "foo a.b\n");
       const fake = fakeBackend({ lines: [rgMatch(a, 1, "Foo a.b\n"), rgMatch(b, 1, "foo a.b\n")] });
 
-      const files = await call(makeGrepOverrideWithBackend(dir, fake.backend), {
+      const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+      const globSchema: any = tool.parameters.properties.glob;
+      assert.deepEqual(globSchema.anyOf.map((option: any) => option.type), ["string", "array"]);
+      const files = await call(tool, {
         pattern: ["Foo", "a.b"],
         path: ["a.ts", "b.ts"],
         glob: ["*.ts", "!**/*.test.ts"],
@@ -289,11 +322,30 @@ test("delegates only safe fallbacks and rejects extended missing-rg requests", a
         text(await call(makeGrepOverrideWithBackend(dir, absent.backend), { pattern: "x" })),
         "delegated",
       );
+      assert.deepEqual(absent.delegates.at(-1)?.[1], { pattern: "x" });
+      const tool = makeGrepOverrideWithBackend(dir, absent.backend);
+      for (const [context, expected] of [
+        [1_000, 20],
+        [1.9, 1],
+        [-1, 0],
+        [Number.POSITIVE_INFINITY, 0],
+      ]) {
+        const params = { pattern: "x", context };
+        await call(tool, params);
+        assert.equal(absent.delegates.at(-1)?.[1].context, expected);
+        assert.equal(params.context, context);
+      }
       await assert.rejects(
         call(makeGrepOverrideWithBackend(dir, absent.backend), {
           pattern: ["x", "y"],
           matchMode: "all",
         }),
+        /ripgrep \(rg\) not found/,
+      );
+      await call(tool, { pattern: "x", glob: "*.ts" });
+      assert.deepEqual(absent.delegates.at(-1)?.[1], { pattern: "x", glob: "*.ts" });
+      await assert.rejects(
+        call(tool, { pattern: "x", glob: ["*.ts", "!**/*.test.ts"] }),
         /ripgrep \(rg\) not found/,
       );
     });
@@ -326,5 +378,62 @@ test("delegates an already-aborted call and rejects an abort during rg execution
       ),
       /Operation aborted/,
     );
+  });
+});
+
+test("keeps regex and case-sensitive defaults across rg and line filters", async () => {
+  await withDir(async (dir) => {
+    const target = join(dir, "case.ts");
+    await writeFile(target, "FOO alpha\n");
+    const fake = fakeBackend({ lines: [rgMatch(target, 1, "FOO alpha\n")] });
+    const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+    const query = { pattern: ["foo", "alpha"], matchMode: "all", excludePattern: "BETA" };
+
+    assert.equal(text(await call(tool, query)), "No matches found");
+    assert.match(text(await call(tool, { ...query, ignoreCase: true })), /FOO alpha/);
+    assert.match(text(await call(tool, { pattern: "FOO", literal: true })), /FOO alpha/);
+    assert.deepEqual(fake.calls.map(({ args }) => ({
+      ignoreCase: args.includes("--ignore-case"),
+      literal: args.includes("--fixed-strings"),
+    })), [
+      { ignoreCase: false, literal: false },
+      { ignoreCase: true, literal: false },
+      { ignoreCase: false, literal: true },
+    ]);
+
+    const invalid = fakeBackend({ code: 2, stderr: "regex parse error:\nerror: unclosed group" });
+    await assert.rejects(
+      call(makeGrepOverrideWithBackend(dir, invalid.backend), { pattern: "queueTool(" }),
+      /regex parse error/,
+    );
+    assert.equal(invalid.calls.length, 1);
+    assert.ok(!invalid.calls[0].args.includes("--fixed-strings"));
+  });
+});
+
+test("native fallback forwards parameters unchanged and propagates regex errors", async () => {
+  await withDir(async (dir) => {
+    const fake = fakeBackend();
+    fake.backend.findRg = async () => null;
+    const tool = makeGrepOverrideWithBackend(dir, fake.backend);
+    const cases = [
+      { pattern: "foo" },
+      { pattern: "(?i)foo" },
+      { pattern: "queueTool(", literal: true, ignoreCase: true },
+    ];
+    for (const params of cases) {
+      const input = { ...params, path: "fixture.ts", glob: "*.ts", context: 2, limit: 3 };
+      assert.equal(text(await call(tool, input)), "delegated");
+      assert.deepEqual(fake.delegates.at(-1)![1], input);
+    }
+    assert.equal(fake.delegates.length, cases.length);
+    assert.equal(fake.calls.length, 0);
+    fake.backend.delegate = async (...args) => {
+      fake.delegates.push(args);
+      throw new Error("regex parse error: unclosed group");
+    };
+    const failingTool = makeGrepOverrideWithBackend(dir, fake.backend);
+    await assert.rejects(call(failingTool, { pattern: "queueTool(" }), /regex parse error/);
+    assert.equal(fake.delegates.length, cases.length + 1);
   });
 });

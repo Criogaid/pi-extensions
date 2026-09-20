@@ -112,17 +112,15 @@ function sumSessionUsage(ctx: { sessionManager: { getEntries(): unknown[] } }): 
   return { input, cacheRead, cacheWrite };
 }
 
-/** Sum billable usage across the full session, matching pi's built-in footer:
- *  assistant responses, usage-bearing tool results, compactions, and branch
- *  summaries. Providers without configured pricing report zero cost. */
-function sumSessionCost(ctx: { sessionManager: { getEntries(): unknown[] } }): number {
+/** @internal Sum every billable session entry, including non-message usage. */
+export function sumSessionCost(ctx: { sessionManager: { getEntries(): unknown[] } }): number {
   let total = 0;
   for (const entry of ctx.sessionManager.getEntries()) {
     const e = entry as EntrySnap;
     let usage: UsageSnap | undefined;
     if (e.type === "message" && (e.message?.role === "assistant" || e.message?.role === "toolResult")) {
       usage = e.message.usage;
-    } else if (e.type === "compaction" || e.type === "branch_summary") {
+    } else if (e.type === "compaction" || e.type === "branch_summary" || e.type === "usage") {
       usage = e.usage;
     }
     const cost = usage?.cost?.total;
@@ -376,6 +374,11 @@ export default function (pi: ExtensionAPI) {
   // Full-session billable cost, including tool/summarization usage. Zero means the
   // provider supplied no priced usage, so the border omits the dollar segment.
   let _sessionCost = 0;
+  let _costLeafId: string | null = null;
+  const refreshSessionCost = (ctx: { sessionManager: { getEntries(): unknown[]; getLeafId(): string | null } }) => {
+    _sessionCost = sumSessionCost(ctx);
+    _costLeafId = ctx.sessionManager.getLeafId();
+  };
 
   // ── Phase-aware spinner + lifecycle ────────────────────────────
   // Each event asks the editor for a phase; CardEditor.setSpinner is itself
@@ -427,7 +430,7 @@ export default function (pi: ExtensionAPI) {
     // recompute here instead of on every render frame.
     _cacheTotal = sumCacheRead(ctx);
     _latestUsage = latestAssistantUsage(ctx);
-    _sessionCost = sumSessionCost(ctx);
+    refreshSessionCost(ctx);
     editor?.setSpinner(null);
   });
   pi.on("session_shutdown", () => {
@@ -438,15 +441,16 @@ export default function (pi: ExtensionAPI) {
     _sawThinking = false;
     _latestPerformance = undefined;
     _sessionCost = 0;
+    _costLeafId = null;
     editor?.setSpinner(null);
     editor = undefined;
   });
   pi.on("session_compact", (_event, ctx) => {
-    _sessionCost = sumSessionCost(ctx);
+    refreshSessionCost(ctx);
     editor?.requestRender();
   });
   pi.on("session_tree", (_event, ctx) => {
-    _sessionCost = sumSessionCost(ctx);
+    refreshSessionCost(ctx);
     editor?.requestRender();
   });
 
@@ -494,7 +498,7 @@ export default function (pi: ExtensionAPI) {
     _reasoningExpected = false;
     _sawThinking = false;
     _latestPerformance = undefined;
-    _sessionCost = sumSessionCost(ctx);
+    refreshSessionCost(ctx);
     refreshGitDirty(ctx.cwd, () => editor?.requestRender());
 
     // Fresh segments on every render — reads live ctx state, so thinking /
@@ -502,6 +506,7 @@ export default function (pi: ExtensionAPI) {
     // The border color itself is left to pi (editor.borderColor), matching
     // the default editor's behavior.
     const provider: FrameProvider = () => {
+      if (_costLeafId !== ctx.sessionManager.getLeafId()) refreshSessionCost(ctx);
       const theme = ctx.ui.theme;
 
       // Resolve pinned status keys → already-themed text, " · "-joined.
@@ -670,8 +675,8 @@ export default function (pi: ExtensionAPI) {
       lines.push(`  session cacheWrite: ${formatTokens(sess.cacheWrite ?? 0)}`);
       const sRate = cacheHitRate(sess);
       lines.push(`  session hit rate: ${sRate != null ? `${sRate.toFixed(1)}%` : "n/a"}`);
-      const sessionCost = sumSessionCost(ctx);
-      _sessionCost = sessionCost;
+      refreshSessionCost(ctx);
+      const sessionCost = _sessionCost;
       lines.push(`  session cost: ${sessionCost > 0 ? `$${sessionCost.toFixed(3)}` : "n/a"}`);
       const latest = latestAssistantUsage(ctx);
       const now = latest?.cacheRead ?? 0;

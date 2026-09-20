@@ -20,7 +20,7 @@ function makeCtx(config: ScoutConfig): ScoutContext {
     rolesApi: { getVisibleRoles: () => ({ heavy: { model: "m/h" } }) } as any,
     skillEntries: [{ name: "skill-a", description: "desc", filePath: "/p" }],
     currentRole: "default",
-    systemPrompt: "",
+    systemPromptOptions: { skills: [] },
     theme: { fg: (_c: string, s: string) => s } as any,
   };
 }

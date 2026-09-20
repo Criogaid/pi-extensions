@@ -8,7 +8,7 @@
  * shared engine logic.
  */
 
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, NormalizedBuildSystemPromptOptions } from "@earendil-works/pi-coding-agent";
 import type { ModelRolesAPI } from "@d3ara1n/pi-model-roles";
 
 /** Configuration for the scout extension, stored in settings.json. */
@@ -64,8 +64,7 @@ export interface SkillEntry {
  * Per-turn context handed to module hooks. A bag of everything any module
  * might need; individual modules read only the fields relevant to them.
  *
- * `systemPrompt` is the current (possibly already-transformed) system prompt;
- * the applier threads it through enabled modules in registry order.
+ * Modules can adjust pi's structured prompt inputs for the current turn.
  */
 export interface ScoutContext {
   config: ScoutConfig;
@@ -74,8 +73,7 @@ export interface ScoutContext {
   skillEntries: SkillEntry[];
   /** Current main-model role name, or "unknown". */
   currentRole: string;
-  /** Current system prompt (mutates as modules apply). */
-  systemPrompt: string;
+  systemPromptOptions: Pick<NormalizedBuildSystemPromptOptions, "skills">;
   theme: any;
 }
 
@@ -98,10 +96,6 @@ export interface InjectedMessage {
 
 /** Result of applying a module's decision. */
 export interface ApplyResult {
-  /** Replacement system prompt (the module may transform it). Must be
-   *  deterministic per input — a per-turn system prompt change invalidates
-   *  the prompt cache for the entire conversation history that follows. */
-  systemPrompt?: string;
   /** Context message appended after the user prompt (append-only history,
    *  so it never invalidates the cached prefix). */
   message?: InjectedMessage;
@@ -158,7 +152,7 @@ export interface ScoutModule<V = unknown> {
   describe(value: V): string;
 
   // ── action ──────────────────────────────────────────────────────
-  /** Apply the decision: side effects + optional prompt transform. */
+  /** Apply the decision: side effects + optional injected message. */
   apply(value: V, ctx: ScoutContext): Promise<ApplyResult | void> | ApplyResult | void;
 }
 

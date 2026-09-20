@@ -8,9 +8,10 @@ import { test } from "node:test";
 import {
   buildSkillsInjection,
   resetSkillCache,
-  stripSkillsSection,
   toSkillEntries,
 } from "./skill-inject.ts";
+import { skillRouterModule } from "./modules/skill-router.ts";
+import type { ScoutContext } from "./types.ts";
 
 const SKILLS = [
   { name: "llm-skill", description: "d1", filePath: "/a/SKILL.md" },
@@ -44,44 +45,26 @@ test("toSkillEntries defaults missing description to empty string", () => {
   assert.deepEqual(entries, [{ name: "s", description: "", filePath: "/p" }]);
 });
 
-// ── stripSkillsSection ────────────────────────────────────────────
+test("skill routing clears only the default skill section input and keeps per-turn injection", async () => {
+  resetSkillCache();
+  const systemPromptOptions = { skills: SKILLS as any[] };
+  const ctx = { systemPromptOptions, skillEntries: SKILLS } as ScoutContext;
 
-function piSystemPrompt(skillsBlock: string): string {
-  return `You are pi.
+  const result = await skillRouterModule.apply(["llm-skill"], ctx);
 
-<project_context>
-instructions
-</project_context>
-
-The following skills provide specialized instructions for specific tasks.
-Use the read tool to load a skill's file when the task matches its description.
-
-<available_skills>
-  <skill>
-    <name>x</name>
-  </skill>
-</available_skills>
-
-Current working directory: /tmp`;
-}
-
-test("stripSkillsSection removes the default skills section and keeps the rest", () => {
-  const prompt = piSystemPrompt("ignored");
-  const stripped = stripSkillsSection(prompt);
-  assert.equal(stripped.includes("available_skills"), false);
-  assert.equal(stripped.includes("specialized instructions"), false);
-  assert.equal(stripped.includes("<project_context>"), true);
-  assert.equal(stripped.includes("Current working directory: /tmp"), true);
+  assert.deepEqual(systemPromptOptions.skills, []);
+  assert.match(result?.message?.content ?? "", /<skill name="llm-skill"/);
 });
 
-test("stripSkillsSection is a no-op when the section is absent", () => {
-  const prompt = "Just a plain system prompt.\n\nCurrent working directory: /tmp";
-  assert.equal(stripSkillsSection(prompt), prompt);
-});
+test("routing zero skills still removes the default list without injecting a message", async () => {
+  resetSkillCache();
+  const systemPromptOptions = { skills: SKILLS as any[] };
+  const ctx = { systemPromptOptions, skillEntries: SKILLS } as ScoutContext;
 
-test("stripSkillsSection is deterministic across calls", () => {
-  const prompt = piSystemPrompt("ignored");
-  assert.equal(stripSkillsSection(prompt), stripSkillsSection(prompt));
+  const result = await skillRouterModule.apply([], ctx);
+
+  assert.deepEqual(systemPromptOptions.skills, []);
+  assert.equal(result?.message, undefined);
 });
 
 // ── buildSkillsInjection ──────────────────────────────────────────

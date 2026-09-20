@@ -109,7 +109,7 @@ export interface ModelRolesAPI {
   listModels(): string[];
 
   /**
-   * Call pi-ai's completeSimple() with auth and thinking resolved from the role.
+   * Complete a request through pi's configured model registry.
    *
    * Convenience: same as streamWithRole().result(). Auth (including OAuth
    * token refresh) is resolved for the model actually used, so callers never
@@ -120,10 +120,10 @@ export interface ModelRolesAPI {
    *
    * @param roleName - Role whose model + auth + thinking to use
    * @param context - Conversation context (systemPrompt + messages)
-   * @param options - Stream options forwarded to pi-ai's completeSimple().
+   * @param options - Stream options forwarded to the model registry.
    *   Pass `model` to override the role's model (auth is then resolved for
    *   that model); pass `reasoning` to override the role's thinking level;
-   *   all other fields pass through unchanged.
+   *   other request fields pass through (resolved credentials take precedence).
    */
   completeWithRole<TApi extends Api = Api>(
     roleName: string,
@@ -132,7 +132,7 @@ export interface ModelRolesAPI {
   ): Promise<AssistantMessage>;
 
   /**
-   * Call pi-ai's streamSimple() with auth resolved internally from the role's model.
+   * Stream through pi's configured model registry, including extension providers.
    *
    * Streaming counterpart to {@link completeWithRole}. Same auth resolution (including
    * OAuth token refresh), same thinking-level application (role's
@@ -141,12 +141,12 @@ export interface ModelRolesAPI {
    * event stream — iterate it for events, call `.result()` for the final
    * AssistantMessage.
    *
-   * Note: unlike pi-ai's synchronous `streamSimple`, this is async because auth
-   * resolution (OAuth token refresh) must complete before the stream starts.
+   * This remains async so unavailable authentication rejects before returning
+   * the stream. Provider dispatch resolves its configured authentication too.
    *
    * @param roleName - Role whose model + auth + thinking to use
    * @param context - Conversation context (systemPrompt + messages)
-   * @param options - Stream options forwarded to pi-ai's streamSimple(). Pass
+   * @param options - Stream options forwarded to the model registry. Pass
    *   `model` to override the role's model; pass `reasoning` to override the
    *   role's thinking level; all other fields pass through.
    */

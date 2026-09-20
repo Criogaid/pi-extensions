@@ -240,13 +240,21 @@ function writeConfig(project: string, config: Record<string, unknown>): void {
 }
 
 /** Register the extension against a minimal in-memory pi API and run one scan. */
-async function scanIncludes(project: string, rootPath: string, rootContent: string): Promise<string | undefined> {
+async function scanIncludes(
+  project: string,
+  rootPath: string,
+  rootContent: string,
+  sections: Record<string, string> = {},
+): Promise<string | undefined> {
   let sessionStart: ((event: unknown, ctx: { cwd: string }) => Promise<void>) | undefined;
   let beforeAgentStart:
     | ((event: {
         systemPrompt?: string;
-        systemPromptOptions: { contextFiles: Array<{ path: string; content: string }> };
-      }) => Promise<{ systemPrompt: string } | undefined>)
+        systemPromptOptions: {
+          contextFiles: Array<{ path: string; content: string }>;
+          sections: Record<string, string>;
+        };
+      }) => Promise<{ systemPrompt?: string } | undefined>)
     | undefined;
 
   contextIncludeExtension({
@@ -260,14 +268,34 @@ async function scanIncludes(project: string, rootPath: string, rootContent: stri
   assert.ok(sessionStart);
   assert.ok(beforeAgentStart);
   await sessionStart({}, { cwd: project });
+  const options = {
+    contextFiles: [{ path: rootPath, content: rootContent }],
+    sections,
+  };
   const result = await beforeAgentStart({
     systemPrompt: "base prompt",
-    systemPromptOptions: { contextFiles: [{ path: rootPath, content: rootContent }] },
+    systemPromptOptions: options,
   });
-  return result?.systemPrompt;
+  assert.equal(result?.systemPrompt, undefined);
+  return options.sections.context_include;
 }
 
 describe("context include recursive resolution", () => {
+  it("updates its own section and removes stale references without replacing the prompt", async () => {
+    const project = makeTempProject();
+    const root = writeFile(project, "AGENTS.md", "@child.md");
+    const child = writeFile(project, "child.md", "first version");
+    const sections = { other_extension: "preserved" } as Record<string, string>;
+
+    assert.match((await scanIncludes(project, root, "@child.md", sections)) ?? "", /first version/);
+    writeFile(project, "child.md", "revised version");
+    assert.match((await scanIncludes(project, root, "@child.md", sections)) ?? "", /revised version/);
+    assert.equal(await scanIncludes(project, root, "no references", sections), undefined);
+    assert.equal(sections.other_extension, "preserved");
+    assert.equal(sections.context_include, undefined);
+    assert.ok(fs.existsSync(child));
+  });
+
   it("includes nested references depth-first with their absolute source paths", async () => {
     const project = makeTempProject();
     const root = writeFile(project, "AGENTS.md", "@first.md");
